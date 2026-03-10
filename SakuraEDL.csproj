@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SakuraEDL</RootNamespace>
+    <AssemblyName>SakuraEDL</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <StartupObject>SakuraEDL.Program</StartupObject>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;obj\**\*;obj_codex\**;obj_codex\**\*;obj_*\**;obj_*\**\*</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!-- NuGet Package References -->
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="10.0.3" />
+    <PackageReference Include="System.Management" Version="10.0.3" />
+    <PackageReference Include="System.Windows.Forms" Version="4.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Form1.cs;Form1.Designer.cs;Form1.resx;Form1.MediaTek.cs;Form1.Spreadtrum.cs;Form1.MediaTek.UI.cs;MultiInstanceForm.cs;MultiInstanceForm.Designer.cs;MultiInstanceForm.resx;SplashForm.cs;SplashForm.Designer.cs;SplashForm.resx;Views\Form1.cs;Views\Form1.MediaTek.cs;Views\Form1.MediaTek.UI.cs;Views\Form1.Spreadtrum.cs" />
+    <Page Remove="Views\Form1.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\Settings.Designer.cs">
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="logo (2).png" />
+    <None Remove="Assets\aat_logo.png" />
+    <Resource Include="Assets\aat_logo.png" />
+  </ItemGroup>
+
+</Project>
