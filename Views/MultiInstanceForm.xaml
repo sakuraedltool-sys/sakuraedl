@@ -1,0 +1,36 @@
+<Window x:Class="SakuraEDL.Views.MultiInstanceForm"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Android Auth Tool" Height="153" Width="299"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        WindowStyle="SingleBorderWindow"
+        Background="White"
+        Topmost="True">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Message -->
+        <TextBlock Grid.Row="0" x:Name="MessageLabel"
+                   FontSize="12"
+                   Foreground="#303030"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   TextAlignment="Center"
+                   Margin="15"
+                   TextWrapping="Wrap"><Run Text="Multiple processes have been "/><Run Language="en-in" Text="D"/><Run Text="tected. Please close other programs."/></TextBlock>
+
+        <!-- Close Button -->
+        <Button Grid.Row="1" Name="CloseButton" 
+                Content="Close"
+                Height="40"
+                Margin="44,10,49,19"
+                Background="#FF8080"
+                Foreground="Black"
+                FontSize="10"
+                Click="CloseButton_Click"/>
+    </Grid>
+</Window>
