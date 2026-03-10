@@ -1,0 +1,2705 @@
+// ============================================================================
+// SakuraEDL - Device Info Service | 设备信息服务
+// ============================================================================
+// [ZH] 设备信息服务 - 从多种来源获取设备详细信息
+// [EN] Device Info Service - Get device details from multiple sources
+// [JA] デバイス情報サービス - 複数のソースからデバイス情報を取得
+// [KO] 기기 정보 서비스 - 여러 소스에서 기기 정보 가져오기
+// [RU] Сервис информации об устройстве - Получение данных из разных источников
+// [ES] Servicio de info del dispositivo - Obtener info de múltiples fuentes
+// ============================================================================
+// Sources: Sahara, Firehose, Super partition, build.prop
+// Copyright (c) 2025-2026 SakuraEDL | Licensed under CC BY-NC-SA 4.0
+// ============================================================================
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using SakuraEDL.Qualcomm.Common;
+using SakuraEDL.Qualcomm.Database;
+using SakuraEDL.Qualcomm.Models;
+
+namespace SakuraEDL.Qualcomm.Services
+{
+    #region 数据模型
+
+    /// <summary>
+    /// 完整设备信息
+    /// </summary>
+    public class DeviceFullInfo
+    {
+        // 基础信息 (Sahara 获取)
+        public string ChipSerial { get; set; }
+        public string ChipName { get; set; }
+        public string HwId { get; set; }
+        public string PkHash { get; set; }
+        public string Vendor { get; set; }
+
+        // 固件信息 (Firehose/build.prop 获取)
+        public string Brand { get; set; }
+        public string Model { get; set; }
+        public string Product { get; set; }       // 产品代号
+        public string DevProduct { get; set; }    // 设备产品名
+        public string MarketName { get; set; }
+        public string MarketNameEn { get; set; }
+        public string MarketRegion { get; set; }  // 市场区域
+        public string Region { get; set; }        // 区域代码
+        public string DeviceCodename { get; set; }
+        public string AndroidVersion { get; set; }
+        public string SdkVersion { get; set; }
+        public string SecurityPatch { get; set; }
+        public string BuildId { get; set; }
+        public string Fingerprint { get; set; }
+        public string OtaVersion { get; set; }
+        public string OtaVersionFull { get; set; } // 新增：完整固件包名称
+        public string DisplayId { get; set; }
+        public string BuiltDate { get; set; }     // 新增：人类可读构建日期
+        public string BuildTimestamp { get; set; } // 新增：Unix 时间戳
+
+        // 存储信息
+        public string StorageType { get; set; }
+        public int SectorSize { get; set; }
+        public bool IsAbDevice { get; set; }
+        public string CurrentSlot { get; set; }
+
+        // OPLUS 特有信息
+        public string OplusCpuInfo { get; set; }
+        public string OplusNvId { get; set; }
+        public string OplusProject { get; set; }
+
+        // Lenovo 特有信息
+        public string LenovoSeries { get; set; }
+
+        // 硬件识别信息 (devinfo 分区获取)
+        public string HardwareSn { get; set; }
+        public string Imei1 { get; set; }
+        public string Imei2 { get; set; }
+
+        // 信息来源
+        public Dictionary<string, string> Sources { get; set; }
+
+        public DeviceFullInfo()
+        {
+            ChipSerial = "";
+            ChipName = "";
+            HwId = "";
+            PkHash = "";
+            Vendor = "";
+            Brand = "";
+            Model = "";
+            MarketName = "";
+            MarketNameEn = "";
+            DeviceCodename = "";
+            AndroidVersion = "";
+            SdkVersion = "";
+            SecurityPatch = "";
+            BuildId = "";
+            Fingerprint = "";
+            OtaVersion = "";
+            DisplayId = "";
+            StorageType = "";
+            CurrentSlot = "";
+            OplusCpuInfo = "";
+            OplusNvId = "";
+            OplusProject = "";
+            LenovoSeries = "";
+            HardwareSn = "";
+            Imei1 = "";
+            Imei2 = "";
+            Sources = new Dictionary<string, string>();
+        }
+
+        /// <summary>
+        /// 获取显示用的设备名称
+        /// </summary>
+        public string DisplayName
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(MarketName)) return MarketName;
+                if (!string.IsNullOrEmpty(MarketNameEn)) return MarketNameEn;
+                if (!string.IsNullOrEmpty(Brand) && !string.IsNullOrEmpty(Model))
+                    return $"{Brand} {Model}";
+                return Model;
+            }
+        }
+
+        /// <summary>
+        /// 获取格式化的设备信息摘要
+        /// </summary>
+        public string GetSummary()
+        {
+            var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(DisplayName))
+                sb.AppendLine($"设备: {DisplayName}");
+            if (!string.IsNullOrEmpty(Model) && Model != DisplayName)
+                sb.AppendLine($"型号: {Model}");
+            if (!string.IsNullOrEmpty(ChipName) && ChipName != "Unknown")
+                sb.AppendLine($"芯片: {ChipName}");
+            if (!string.IsNullOrEmpty(AndroidVersion))
+                sb.AppendLine($"Android: {AndroidVersion}");
+            if (!string.IsNullOrEmpty(OtaVersion))
+                sb.AppendLine($"版本: {OtaVersion}");
+            if (!string.IsNullOrEmpty(StorageType))
+                sb.AppendLine($"存储: {StorageType.ToUpper()}");
+            if (!string.IsNullOrEmpty(OplusProject))
+                sb.AppendLine($"项目ID: {OplusProject}");
+            if (!string.IsNullOrEmpty(OplusNvId))
+                sb.AppendLine($"NV ID: {OplusNvId}");
+            if (!string.IsNullOrEmpty(LenovoSeries))
+                sb.AppendLine($"联想系列: {LenovoSeries}");
+            if (!string.IsNullOrEmpty(HardwareSn))
+                sb.AppendLine($"硬件序列号: {HardwareSn}");
+            return sb.ToString().TrimEnd();
+        }
+    }
+
+    /// <summary>
+    /// Build.prop 解析结果
+    /// </summary>
+    public class BuildPropInfo
+    {
+        public string Brand { get; set; }
+        public string Model { get; set; }
+        public string Product { get; set; }        // 产品代号 ro.product.product
+        public string DevProduct { get; set; }     // 设备产品名
+        public string Device { get; set; }
+        public string DeviceName { get; set; }     // ro.product.name
+        public string Codename { get; set; }       // ro.product.device / ro.build.product
+        public string MarketName { get; set; }
+        public string MarketNameEn { get; set; }
+        public string MarketRegion { get; set; }   // 市场区域
+        public string Region { get; set; }         // 区域代码
+        public string Manufacturer { get; set; }
+        public string AndroidVersion { get; set; }
+        public string SdkVersion { get; set; }
+        public string SecurityPatch { get; set; }
+        public string BuildId { get; set; }
+        public string Fingerprint { get; set; }
+        public string DisplayId { get; set; }
+        public string OtaVersion { get; set; }
+        public string OtaVersionFull { get; set; }
+        public string Incremental { get; set; }
+        public string BuildDate { get; set; }
+        public string BuildUtc { get; set; }
+        public string BootSlot { get; set; }
+
+        // OPLUS 特有
+        public string OplusCpuInfo { get; set; }
+        public string OplusNvId { get; set; }
+        public string OplusProject { get; set; }
+
+        // Lenovo 特有
+        public string LenovoSeries { get; set; }
+
+        public Dictionary<string, string> AllProperties { get; set; }
+
+        public BuildPropInfo()
+        {
+            Brand = "";
+            Model = "";
+            Device = "";
+            DeviceName = "";
+            Codename = "";
+            MarketName = "";
+            MarketNameEn = "";
+            Manufacturer = "";
+            AndroidVersion = "";
+            SdkVersion = "";
+            SecurityPatch = "";
+            BuildId = "";
+            Fingerprint = "";
+            DisplayId = "";
+            OtaVersion = "";
+            OtaVersionFull = "";
+            Incremental = "";
+            BuildDate = "";
+            BuildUtc = "";
+            BootSlot = "";
+            OplusCpuInfo = "";
+            OplusNvId = "";
+            OplusProject = "";
+            LenovoSeries = "";
+            AllProperties = new Dictionary<string, string>();
+        }
+    }
+
+    /// <summary>
+    /// LP 分区信息 (增强版 - 支持精准物理偏移)
+    /// </summary>
+    public class LpPartitionInfo
+    {
+        public string Name { get; set; }
+        public uint Attrs { get; set; }
+        public long RelativeSector { get; set; } // 相对于 super 起始的 512B 扇区偏移
+        public long AbsoluteSector { get; set; } // 在磁盘上的绝对物理扇区 (根据 physicalSectorSize 换算)
+        public long SizeInSectors { get; set; }  // 分区大小 (扇区数)
+        public long Size { get; set; }           // 分区大小 (字节)
+        public string FileSystem { get; set; }
+
+        public LpPartitionInfo()
+        {
+            Name = "";
+            FileSystem = "unknown";
+        }
+    }
+
+    /// <summary>
+    /// 镜像映射块信息 (用于精准偏移读取)
+    /// </summary>
+    public class ImageMapBlock
+    {
+        public long BlockIndex { get; set; }
+        public long BlockCount { get; set; }
+        public long FileOffset { get; set; } // 在 .img 文件中的偏移
+    }
+
+    /// <summary>
+    /// 镜像映射表解析器 (针对 OPPO/Realme 固件的 .map 文件)
+    /// </summary>
+    public class ImageMapParser
+    {
+        public List<ImageMapBlock> ParseMapFile(string mapPath, int blockSize = 4096)
+        {
+            var blocks = new List<ImageMapBlock>();
+            if (!File.Exists(mapPath)) return blocks;
+
+            try
+            {
+                var lines = File.ReadAllLines(mapPath);
+                long currentFileOffset = 0;
+
+                foreach (var line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+                    
+                    // 格式通常为: start_block block_count
+                    var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
+                    {
+                        long start;
+                        long count;
+                        if (long.TryParse(parts[0], out start) && long.TryParse(parts[1], out count))
+                        {
+                            blocks.Add(new ImageMapBlock
+                            {
+                                BlockIndex = start,
+                                BlockCount = count,
+                                FileOffset = currentFileOffset
+                            });
+                            currentFileOffset += count * blockSize;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ImageMapParser] 解析块映射异常: {ex.Message}");
+            }
+            return blocks;
+        }
+    }
+
+    #endregion
+
+    /// <summary>
+    /// 设备信息服务 - 支持从多种来源获取设备信息
+    /// </summary>
+    public class DeviceInfoService
+    {
+        // LP Metadata 常量
+        private const uint LP_METADATA_GEOMETRY_MAGIC = 0x616c4467;  // "gDla"
+        private const uint LP_METADATA_HEADER_MAGIC = 0x41680530;    // 标准: "0\x05hA"
+        private const uint LP_METADATA_HEADER_MAGIC_ALP0 = 0x414c5030; // 联想: "0PLA"
+        private const ushort EXT4_MAGIC = 0xEF53;
+        private const uint EROFS_MAGIC = 0xE0F5E1E2;
+
+        private readonly Action<string> _log;
+        private readonly Action<string> _logDetail;
+
+        public DeviceInfoService(Action<string> log = null, Action<string> logDetail = null)
+        {
+            _log = log ?? delegate { };
+            _logDetail = logDetail ?? delegate { };
+        }
+
+        #region Build.prop 解析
+
+        /// <summary>
+        /// 从 build.prop 文件路径解析设备信息
+        /// </summary>
+        public BuildPropInfo ParseBuildPropFile(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    _log($"文件不存在: {filePath}");
+                    return null;
+                }
+
+                var content = File.ReadAllText(filePath, Encoding.UTF8);
+                return ParseBuildProp(content);
+            }
+            catch (Exception ex)
+            {
+                _log($"解析 build.prop 失败: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 从 build.prop 内容解析设备信息 (增强版 - 支持属性块探测)
+        /// </summary>
+        public BuildPropInfo ParseBuildProp(string content)
+        {
+            var info = new BuildPropInfo();
+            if (string.IsNullOrEmpty(content)) return info;
+
+            // 包含正则表达式需要的命名空间
+            // 注意：Regex 在 System.Text.RegularExpressions 中
+            
+            // 如果内容中包含大量的不可打印字符，说明可能是原始分区数据
+            // 我们需要提取其中的有效行 (增强版正则表达式)
+            string[] lines;
+            if (content.Contains("\0"))
+            {
+                var list = new List<string>();
+                // 1. 匹配标准 ro. 属性
+                var matches = System.Text.RegularExpressions.Regex.Matches(content, @"(ro|display|persist)\.[a-zA-Z0-9._-]+=[^\r\n\x00\s]+");
+                foreach (System.Text.RegularExpressions.Match m in matches) list.Add(m.Value);
+                
+                // 2. 匹配 OPLUS/Lenovo/Xiaomi/ZTE 特有属性
+                var oplusMatches = System.Text.RegularExpressions.Regex.Matches(content, @"(separate\.soft|region|date\.utc|ro\.build\.oplus_nv_id|display\.id\.show|ro\.lenovo\.series|ro\.lenovo\.cpuinfo|ro\.system_ext\.build\.version\.incremental|ro\.zui\.version|ro\.miui\.ui\.version\.name|ro\.miui\.ui\.version\.code|ro\.miui\.region|ro\.build\.MiFavor_version|ro\.build\.display\.id)=[^\r\n\x00\s]+");
+                foreach (System.Text.RegularExpressions.Match m in oplusMatches) list.Add(m.Value);
+                
+                lines = list.ToArray();
+            }
+            else
+            {
+                lines = content.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            }
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#")) continue;
+
+                var idx = trimmed.IndexOf('=');
+                if (idx <= 0) continue;
+
+                var key = trimmed.Substring(0, idx).Trim();
+                var value = trimmed.Substring(idx + 1).Trim();
+
+                // 移除可能存在的末尾乱码 (常见于 EROFS 原始块提取)
+                if (value.Length > 0 && (value[value.Length - 1] < 32 || value[value.Length - 1] > 126))
+                {
+                    value = value.TrimEnd('\0', '\r', '\n', '\t', ' ');
+                }
+
+                if (string.IsNullOrEmpty(value)) continue;
+
+                info.AllProperties[key] = value;
+
+                // 核心属性映射
+                switch (key)
+                {
+                    case "ro.product.vendor.brand":
+                    case "ro.product.brand":
+                    case "ro.product.manufacturer":
+                        if (string.IsNullOrEmpty(info.Brand) || value != "oplus")
+                            info.Brand = value;
+                        break;
+                    
+                    // OPLUS 市场名称 (优先级最高)
+                    case "ro.vendor.oplus.market.name":
+                        // 这是最准确的中文市场名，如 "一加 12"
+                        info.MarketName = value;
+                        break;
+
+                    case "ro.vendor.oplus.market.enname":
+                        // 英文市场名，如 "OnePlus 12"，作为备选
+                        if (string.IsNullOrEmpty(info.MarketName))
+                            info.MarketName = value;
+                        break;
+
+                    case "ro.product.marketname":
+                    case "ro.product.vendor.marketname":
+                    case "ro.product.odm.marketname":
+                        // 其他厂商的市场名
+                        if (string.IsNullOrEmpty(info.MarketName))
+                            info.MarketName = value;
+                        break;
+
+                    case "ro.product.model":
+                    case "ro.product.vendor.model":
+                    case "ro.product.odm.model":
+                    case "ro.product.odm.cert":
+                    case "ro.lenovo.series":
+                        if (string.IsNullOrEmpty(info.Model) || value.Length > info.Model.Length || key == "ro.lenovo.series")
+                        {
+                            // 如果包含 Y700 或 Legion，优先级最高
+                            if (value.Contains("Y700") || value.Contains("Legion"))
+                                info.MarketName = value;
+                            else
+                                info.Model = value;
+                        }
+                        break;
+
+                    case "ro.miui.ui.version.name":
+                        // MIUI/HyperOS 版本名：V14.0.x.x 或 OS1.0.x.x
+                        // 注意：这个属性可能只有 "V125" 这样的短版本，需要和 ro.build.display.id 配合
+                        if (string.IsNullOrEmpty(info.OtaVersion))
+                            info.OtaVersion = value;
+                        // 检测 HyperOS 版本
+                        if (value.Contains("OS3.")) info.AndroidVersion = "16.0";
+                        else if (value.Contains("OS2.")) info.AndroidVersion = "15.0";
+                        else if (value.Contains("OS1.")) info.AndroidVersion = "14.0";
+                        break;
+
+                    case "ro.miui.ui.version.code":
+                        // 版本代码，优先级较低
+                        if (string.IsNullOrEmpty(info.OtaVersion))
+                            info.OtaVersion = value;
+                        break;
+                    
+                    // 完整增量版本号 (小米: V14.0.8.0.TNJCNXM, 通用: eng.xxx.20240101)
+                    case "ro.build.version.incremental":
+                    case "ro.system.build.version.incremental":
+                    case "ro.vendor.build.version.incremental":
+                        // 始终保存 Incremental
+                        if (string.IsNullOrEmpty(info.Incremental))
+                            info.Incremental = value;
+                        
+                        // 小米设备的完整版本号，如 "V14.0.8.0.TNJCNXM" 或 "OS1.0.x.x"
+                        if (!string.IsNullOrEmpty(value))
+                        {
+                            // 小米 MIUI/HyperOS 版本
+                            if (value.StartsWith("V") || value.StartsWith("OS"))
+                            {
+                                if (string.IsNullOrEmpty(info.OtaVersion) || info.OtaVersion.Length < value.Length)
+                                    info.OtaVersion = value;
+                            }
+                            // 其他设备：如果包含完整版本号格式
+                            else if (value.Contains(".") && value.Length > 8)
+                            {
+                                if (string.IsNullOrEmpty(info.OtaVersion))
+                                    info.OtaVersion = value;
+                            }
+                        }
+                        break;
+
+                    case "ro.build.MiFavor_version":
+                        // 中兴 NebulaOS/MiFavor 版本
+                        if (string.IsNullOrEmpty(info.OtaVersion)) info.OtaVersion = value;
+                        break;
+
+                    // OPLUS 展示版本 (最高优先级) - 如 "PJD110_14.0.0.801(CN01)"
+                    case "ro.build.display.id.show":
+                        // 这是最准确的展示版本，直接使用
+                        info.OtaVersion = value;
+                        info.OtaVersionFull = value;
+                        break;
+
+                    // OPLUS 完整 OTA 包名 - 如 "PJD110domestic_11_14.0.0.801(CN01)_2024051322460079"
+                    case "ro.build.display.full_id":
+                        info.OtaVersionFull = value;
+                        // 如果 OtaVersion 未设置，从完整包名提取简化版本
+                        if (string.IsNullOrEmpty(info.OtaVersion))
+                        {
+                            // 提取 14.0.0.801(CN01) 部分
+                            var m = Regex.Match(value, @"(\d+\.\d+\.\d+\.\d+)\(([A-Z]{2}\d+)\)");
+                            if (m.Success)
+                                info.OtaVersion = string.Format("{0}({1})", m.Groups[1].Value, m.Groups[2].Value);
+                        }
+                        break;
+
+                    case "ro.build.version.ota":
+                        // OPLUS 完整 OTA 版本: PJD110_11.A.70_0700_202405132246
+                        // 仅作为 OtaVersionFull 备用，不覆盖 OtaVersion
+                        if (string.IsNullOrEmpty(info.OtaVersionFull))
+                            info.OtaVersionFull = value;
+                        break;
+
+                    case "ro.build.display.id":
+                    case "ro.system_ext.build.version.incremental":
+                    case "ro.vendor.build.display.id":
+                        // 始终保存 DisplayId
+                        if (string.IsNullOrEmpty(info.DisplayId) && key == "ro.build.display.id")
+                            info.DisplayId = value;
+                        
+                        // 如果 ro.build.display.id.show 已设置 (包含括号)，跳过 OtaVersion 设置
+                        if (!string.IsNullOrEmpty(info.OtaVersion) && info.OtaVersion.Contains("("))
+                            break;
+                        
+                        // 联想 ZUXOS 处理: TB321FU_CN_OPEN_USER_Q00011.0_V_ZUI_17.0.10.308_ST_251030
+                        if (value.Contains("ZUI") || value.Contains("ZUXOS"))
+                        {
+                            info.OtaVersionFull = value;
+                            // 提取精简版: 17.0.10.308
+                            var m = Regex.Match(value, @"\d+\.\d+\.\d+\.\d+");
+                            if (m.Success) info.OtaVersion = m.Value;
+                        }
+                        // 如果是努比亚/红魔，该字段通常包含 RedMagicOSxx 或 NebulaOS
+                        else if (value.Contains("RedMagic") || value.Contains("Nebula"))
+                        {
+                            info.OtaVersion = value;
+                        }
+                        // OPLUS 设备：完整 OTA 版本通常格式为 PKG110_14.0.0.801(CN01)
+                        else if (value.Contains("(") && value.Contains(")") && (value.Contains("CN") || value.Contains("GL") || value.Contains("EU") || value.Contains("IN")))
+                        {
+                            info.OtaVersionFull = value;
+                            info.OtaVersion = value; // 直接使用完整格式
+                        }
+                        // 小米 MIUI/HyperOS 版本格式: V14.0.8.0.TNJCNXM 或 OS1.0.x.x
+                        else if (value.StartsWith("V") || value.StartsWith("OS"))
+                        {
+                            if (string.IsNullOrEmpty(info.OtaVersion) || info.OtaVersion.Length < value.Length)
+                                info.OtaVersion = value;
+                        }
+                        else
+                        {
+                            if (string.IsNullOrEmpty(info.OtaVersion))
+                                info.OtaVersion = value;
+                        }
+                        break;
+                    
+                    // OPLUS 设备特有属性
+                    case "ro.vendor.oplus.ota.version":
+                    case "ro.oem.version":
+                        // OPLUS 完整 OTA 版本
+                        if (!string.IsNullOrEmpty(value))
+                        {
+                            info.OtaVersionFull = value;
+                            // 如果当前 OtaVersion 只是简单数字，用这个更完整的版本
+                            if (string.IsNullOrEmpty(info.OtaVersion) || !info.OtaVersion.Contains("."))
+                                info.OtaVersion = value;
+                        }
+                        break;
+                    case "display.id.show":
+                    case "region": // 将 region 映射到 OtaVersion，方便界面展示
+                        if (key == "display.id.show" || key == "region" || string.IsNullOrEmpty(info.OtaVersion))
+                        {
+                            // 如果是 display.id.show 且包含 (CNxx)，这就是最准确的展示版本
+                            if (key == "display.id.show" && value.Contains("(") && value.Contains(")"))
+                            {
+                                info.OtaVersion = value;
+                            }
+                            else if (string.IsNullOrEmpty(info.OtaVersion))
+                            {
+                                info.OtaVersion = value;
+                            }
+                        }
+                        break;
+                    
+                    case "ro.build.oplus_nv_id":
+                        info.OplusNvId = value;
+                        break;
+                    
+                    // OPLUS 项目号 (多个来源，按优先级)
+                    case "ro.oplus.image.my_product.type":
+                        // 最准确的项目号来源 (如 22825)
+                        info.OplusProject = value;
+                        break;
+                    
+                    case "ro.separate.soft":
+                    case "ro.product.supported_versions":
+                        // 备选项目号来源
+                        if (string.IsNullOrEmpty(info.OplusProject))
+                            info.OplusProject = value;
+                        break;
+                    
+                    // OPLUS ROM 版本
+                    case "ro.build.version.oplusrom":
+                    case "ro.build.version.oplusrom.display":
+                    case "ro.build.version.oplusrom.confidential":
+                        if (!info.AllProperties.ContainsKey("oplus_rom_version"))
+                            info.AllProperties["oplus_rom_version"] = value;
+                        break;
+                    
+                    // OPLUS 区域
+                    case "ro.oplus.image.my_region.type":
+                    case "ro.oplus.pipeline_key":
+                        if (!info.AllProperties.ContainsKey("oplus_region"))
+                            info.AllProperties["oplus_region"] = value;
+                        break;
+                    
+                    case "ro.lenovo.cpuinfo":
+                        info.OplusCpuInfo = value; // 借用 OplusCpuInfo 存储 CPU 信息
+                        break;
+
+                    case "ro.build.date":
+                        info.BuildDate = value;
+                        break;
+
+                    case "ro.build.date.utc":
+                        info.BuildUtc = value;
+                        break;
+
+                    case "ro.build.version.release":
+                    case "ro.build.version.release_or_codename":
+                    case "ro.vendor.build.version.release":
+                    case "ro.vendor.build.version.release_or_codename":
+                    case "ro.odm.build.version.release":
+                    case "ro.product.build.version.release":
+                    case "ro.system.build.version.release":
+                        if (string.IsNullOrEmpty(info.AndroidVersion))
+                            info.AndroidVersion = value;
+                        break;
+                    
+                    case "ro.build.version.sdk":
+                    case "ro.vendor.build.version.sdk":
+                    case "ro.system.build.version.sdk":
+                        if (string.IsNullOrEmpty(info.SdkVersion))
+                            info.SdkVersion = value;
+                        break;
+                    
+                    case "ro.build.version.security_patch":
+                    case "ro.vendor.build.version.security_patch":
+                    case "ro.system.build.version.security_patch":
+                        if (string.IsNullOrEmpty(info.SecurityPatch))
+                            info.SecurityPatch = value;
+                        break;
+                    
+                    case "ro.product.device":
+                    case "ro.product.vendor.device":
+                    case "ro.product.odm.device":
+                    case "ro.product.system.device":
+                    case "ro.build.product":
+                    case "ro.product.board":
+                        if (string.IsNullOrEmpty(info.Codename))
+                            info.Codename = value;
+                        // 同时设置 Device 字段作为备选
+                        if (string.IsNullOrEmpty(info.Device))
+                            info.Device = value;
+                        break;
+                    
+                    case "ro.build.id":
+                        info.BuildId = value;
+                        break;
+                    
+                    case "ro.build.fingerprint":
+                    case "ro.system.build.fingerprint":
+                    case "ro.vendor.build.fingerprint":
+                        if (string.IsNullOrEmpty(info.Fingerprint))
+                            info.Fingerprint = value;
+                        break;
+                    
+                    case "ro.product.name":
+                    case "ro.product.vendor.name":
+                        if (string.IsNullOrEmpty(info.DeviceName))
+                            info.DeviceName = value;
+                        // 如果没有 Codename，product.name 通常也是设备代号
+                        if (string.IsNullOrEmpty(info.Codename) && !value.Contains(" "))
+                            info.Codename = value;
+                        break;
+                }
+            }
+            
+            // 如果仍然没有 Codename，尝试从 Fingerprint 中提取
+            // Fingerprint 格式: Brand/device/device:version/... 例如 Xiaomi/polaris/polaris:10/...
+            if (string.IsNullOrEmpty(info.Codename) && !string.IsNullOrEmpty(info.Fingerprint))
+            {
+                var parts = info.Fingerprint.Split('/');
+                if (parts.Length >= 3)
+                {
+                    // 第二个和第三个部分通常包含设备代号
+                    string candidate = parts[1]; // 通常是设备代号
+                    if (!string.IsNullOrEmpty(candidate) && !candidate.Contains(" ") && candidate.Length > 2)
+                    {
+                        info.Codename = candidate;
+                    }
+                }
+            }
+
+            return info;
+        }
+
+        #endregion
+
+        #region LP Metadata 解析
+
+        /// <summary>
+        /// 设备读取委托 - 用于从 9008 设备读取指定偏移的数据
+        /// </summary>
+        public delegate byte[] DeviceReadDelegate(long offsetInSuper, int size);
+
+        /// <summary>
+        /// 解析 LP Metadata - 从设备按需读取 (精准偏移版)
+        /// </summary>
+        /// <param name="readFromDevice">读取委托 (从 super 分区起始开始读取)</param>
+        /// <param name="superStartSector">super 分区的起始物理扇区 (从 GPT 获取)</param>
+        /// <param name="physicalSectorSize">设备的物理扇区大小 (通常为 4096 或 512)</param>
+        public List<LpPartitionInfo> ParseLpMetadataFromDevice(DeviceReadDelegate readFromDevice, long superStartSector = 0, int physicalSectorSize = 512)
+        {
+            try
+            {
+                // 1. 读取 Geometry (偏移 0x1000 = 4096，大小 4096)
+                var geometryData = readFromDevice(4096, 4096);
+                if (geometryData == null || geometryData.Length < 52)
+                {
+                    _log("无法读取 LP Geometry");
+                    return null;
+                }
+
+                uint magic = BitConverter.ToUInt32(geometryData, 0);
+                if (magic != LP_METADATA_GEOMETRY_MAGIC)
+                {
+                    _log("无效的 LP Geometry magic");
+                    return null;
+                }
+
+                uint metadataMaxSize = BitConverter.ToUInt32(geometryData, 40);
+                uint metadataSlotCount = BitConverter.ToUInt32(geometryData, 44);
+                
+                // 2. 尝试寻找活动的 Metadata Header
+                // 可能的偏移：8192 (Slot0, 512B扇区), 12288 (Slot0, 4KB扇区), 4096 (早期)
+                long[] possibleOffsets = { 8192, 12288, 4096, 16384 };
+                byte[] metadataData = null;
+                uint headerMagic = 0;
+                long finalOffset = 0;
+
+                foreach (var offset in possibleOffsets)
+                {
+                    metadataData = readFromDevice(offset, 4096); // 先读 4KB 探测
+                    if (metadataData == null || metadataData.Length < 256) continue;
+
+                    headerMagic = BitConverter.ToUInt32(metadataData, 0);
+                    if (headerMagic == LP_METADATA_HEADER_MAGIC || headerMagic == LP_METADATA_HEADER_MAGIC_ALP0)
+                    {
+                        finalOffset = offset;
+                        break;
+                    }
+                }
+
+                if (finalOffset == 0)
+                {
+                    _log("无法找到有效的 LP Metadata Header");
+                    return null;
+                }
+
+                // 读取完整的 metadata (根据 header 中的 size)
+                // LP Metadata Header 格式:
+                // offset 0: magic (4 bytes)
+                // offset 4: major_version (2 bytes)
+                // offset 6: minor_version (2 bytes)
+                // offset 8: header_size (4 bytes)
+                // offset 12: header_checksum (4 bytes)
+                // offset 16: tables_size (4 bytes) <- 注意是 16，不是 24
+                // offset 20: tables_checksum (4 bytes)
+                uint headerSize = BitConverter.ToUInt32(metadataData, 8);
+                uint tablesSize = BitConverter.ToUInt32(metadataData, 16); // 修复：偏移应为 16
+                int totalToRead = (int)(headerSize + tablesSize);
+                
+                // 合理性检查：headerSize 通常是 256 或 512，tablesSize 通常小于 64KB
+                if (headerSize > 4096 || tablesSize > 256 * 1024)
+                {
+                    _log(string.Format("[LP] 可疑的 Header 大小: headerSize={0}, tablesSize={1}，尝试备用偏移", headerSize, tablesSize));
+                    // 可能是版本差异，尝试其他偏移
+                    headerSize = BitConverter.ToUInt32(metadataData, 8);
+                    tablesSize = BitConverter.ToUInt32(metadataData, 20); // 备用偏移
+                    totalToRead = (int)(headerSize + tablesSize);
+                }
+                
+                _logDetail(string.Format("[LP] Header 偏移={0}, headerSize={1}, tablesSize={2}, 需读取={3} 字节", 
+                    finalOffset, headerSize, tablesSize, totalToRead));
+                
+                if (totalToRead > metadataData.Length)
+                {
+                    // 限制单次读取大小，防止超时
+                    if (totalToRead > 1024 * 1024)
+                    {
+                        _log(string.Format("LP Metadata 过大 ({0} 字节)，限制为 1MB", totalToRead));
+                        totalToRead = 1024 * 1024;
+                    }
+                    
+                    metadataData = readFromDevice(finalOffset, totalToRead);
+                    if (metadataData == null)
+                    {
+                        _log(string.Format("无法读取 LP Metadata (偏移={0}, 大小={1})", finalOffset, totalToRead));
+                        return null;
+                    }
+                    if (metadataData.Length < totalToRead)
+                    {
+                        _log(string.Format("LP Metadata 读取不完整: 期望 {0} 字节, 实际 {1} 字节", totalToRead, metadataData.Length));
+                        // 尝试使用已读取的数据继续解析
+                        if (metadataData.Length < headerSize)
+                        {
+                            return null;
+                        }
+                    }
+                }
+
+                int tablesBase = (int)headerSize;
+
+                // 3. 解析表描述符 (偏移 0x50)
+                int tablesOffset = 0x50;
+                uint partOffset = BitConverter.ToUInt32(metadataData, tablesOffset);
+                uint partNum = BitConverter.ToUInt32(metadataData, tablesOffset + 4);
+                uint partEntrySize = BitConverter.ToUInt32(metadataData, tablesOffset + 8);
+                uint extOffset = BitConverter.ToUInt32(metadataData, tablesOffset + 12);
+                uint extNum = BitConverter.ToUInt32(metadataData, tablesOffset + 16);
+                uint extEntrySize = BitConverter.ToUInt32(metadataData, tablesOffset + 20);
+
+                // 4. 解析 extents (物理映射)
+                var extents = new List<Tuple<long, long>>(); // <扇区数, 物理数据块偏移(512B单元)>
+                for (int i = 0; i < extNum; i++)
+                {
+                    int entryOffset = tablesBase + (int)extOffset + i * (int)extEntrySize;
+                    if (entryOffset + 12 > metadataData.Length) break;
+
+                    long numSectors = BitConverter.ToInt64(metadataData, entryOffset);
+                    long targetData = BitConverter.ToInt64(metadataData, entryOffset + 12);
+                    extents.Add(Tuple.Create(numSectors, targetData));
+                }
+
+                // 5. 解析分区并换算【物理扇区】
+                var partitions = new List<LpPartitionInfo>();
+                for (int i = 0; i < partNum; i++)
+                {
+                    int entryOffset = tablesBase + (int)partOffset + i * (int)partEntrySize;
+                    if (entryOffset + partEntrySize > metadataData.Length) break;
+
+                    string name = Encoding.UTF8.GetString(metadataData, entryOffset, 36).TrimEnd('\0');
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    uint attrs = BitConverter.ToUInt32(metadataData, entryOffset + 36);
+                    uint firstExtent = BitConverter.ToUInt32(metadataData, entryOffset + 40);
+                    uint numExtents = BitConverter.ToUInt32(metadataData, entryOffset + 44);
+
+                    if (numExtents > 0 && firstExtent < extents.Count)
+                    {
+                        var ext = extents[(int)firstExtent];
+                        
+                        // 【精准计算逻辑】
+                        // targetData 是 LP 内部以 512 字节为基准的偏移
+                        // 我们需要将其换算为物理磁盘的绝对扇区
+                        long relativeSector = ext.Item2; // 512B 扇区偏移
+                        long absoluteSector = superStartSector + (relativeSector * 512 / physicalSectorSize);
+
+                        var lp = new LpPartitionInfo
+                        {
+                            Name = name,
+                            Attrs = attrs,
+                            RelativeSector = relativeSector,
+                            AbsoluteSector = absoluteSector,
+                            SizeInSectors = ext.Item1 * 512 / physicalSectorSize,
+                            Size = ext.Item1 * 512
+                        };
+
+                        partitions.Add(lp);
+                        _logDetail(string.Format("逻辑分区 [{0}]: 物理扇区={1}, 大小={2}MB", 
+                            lp.Name, lp.AbsoluteSector, lp.Size / 1024 / 1024));
+                    }
+                }
+
+                return partitions;
+            }
+            catch (Exception ex)
+            {
+                _log($"解析 LP Metadata 失败: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 检测文件系统类型
+        /// </summary>
+        public string DetectFileSystem(byte[] data)
+        {
+            if (data == null || data.Length < 512) 
+            {
+                _log(string.Format("  数据太短: {0} 字节", data?.Length ?? 0));
+                return "unknown";
+            }
+
+            // 打印调试信息
+            string debugInfo = "";
+            if (data.Length >= 4)
+            {
+                debugInfo += string.Format("@0={0:X2}{1:X2}{2:X2}{3:X2}", 
+                    data[0], data[1], data[2], data[3]);
+            }
+            if (data.Length >= 1028)
+            {
+                debugInfo += string.Format(" @1024={0:X2}{1:X2}{2:X2}{3:X2}", 
+                    data[1024], data[1025], data[1026], data[1027]);
+            }
+            if (data.Length >= 1082)
+            {
+                // EXT4 魔数位置: 1024 + 56 = 1080
+                debugInfo += string.Format(" @1080={0:X2}{1:X2}", 
+                    data[1080], data[1081]);
+            }
+            _logDetail(string.Format("  魔数: {0}", debugInfo));
+
+            // 检查 Sparse 镜像头 (0xED26FF3A)
+            if (data.Length >= 4)
+            {
+                uint magic0 = BitConverter.ToUInt32(data, 0);
+                if (magic0 == 0xED26FF3A)
+                {
+                    _log("  → Sparse 镜像格式");
+                    return "sparse";
+                }
+            }
+
+            // EROFS: superblock 在偏移 1024，magic = 0xE0F5E1E2 (小端)
+            if (data.Length >= 1024 + 4)
+            {
+                uint erofsAt1024 = BitConverter.ToUInt32(data, 1024);
+                if (erofsAt1024 == EROFS_MAGIC)
+                {
+                    return "erofs";
+                }
+            }
+
+            // EROFS 在偏移 0 (某些特殊情况)
+            if (data.Length >= 4)
+            {
+                uint erofsAt0 = BitConverter.ToUInt32(data, 0);
+                if (erofsAt0 == EROFS_MAGIC)
+                {
+                    _log("  → EROFS 在偏移 0");
+                    return "erofs_raw";
+                }
+            }
+
+            // EXT4: superblock 在偏移 1024，magic 在 offset 56 (0xEF53)
+            if (data.Length >= 1024 + 58)
+            {
+                ushort ext4Magic = BitConverter.ToUInt16(data, 1024 + 56);
+                if (ext4Magic == EXT4_MAGIC) 
+                {
+                    return "ext4";
+                }
+            }
+
+            // F2FS: magic at offset 1024
+            if (data.Length >= 1024 + 4)
+            {
+                uint f2fsMagic = BitConverter.ToUInt32(data, 1024);
+                if (f2fsMagic == 0xF2F52010) return "f2fs";
+            }
+
+            // SquashFS: magic = 0x73717368 ("hsqs") 或 0x68737173 ("sqsh")
+            if (data.Length >= 4)
+            {
+                uint sqshMagic = BitConverter.ToUInt32(data, 0);
+                if (sqshMagic == 0x73717368 || sqshMagic == 0x68737173) return "squashfs";
+            }
+
+            // 检测 Android Boot Image (boot, recovery)
+            if (data.Length >= 8)
+            {
+                // ANDROID! magic
+                if (data[0] == 'A' && data[1] == 'N' && data[2] == 'D' && data[3] == 'R' &&
+                    data[4] == 'O' && data[5] == 'I' && data[6] == 'D' && data[7] == '!')
+                {
+                    return "android_boot";
+                }
+            }
+
+            // 检测 AVB (Android Verified Boot) footer - 可能在分区末尾
+            // AVB 签名的分区通常有特殊的头部结构
+
+            // 检测可能的加密或签名分区 (小米等厂商可能使用)
+            if (data.Length >= 4)
+            {
+                // 检查是否全是 0x00 (空分区)
+                bool allZero = true;
+                for (int i = 0; i < Math.Min(64, data.Length); i++)
+                {
+                    if (data[i] != 0) { allZero = false; break; }
+                }
+                if (allZero)
+                {
+                    _log("  → 分区数据为空");
+                    return "empty";
+                }
+                
+                // 检测小米特定的签名头部 (S72_, S27_ 等类似格式)
+                // 这些签名头部表示分区有签名/AVB数据，真正的文件系统在后面
+                if (data.Length >= 4)
+                {
+                    char c0 = (char)data[0], c1 = (char)data[1], c2 = (char)data[2], c3 = (char)data[3];
+                    // 检查是否看起来像签名头 (ASCII 字母/数字/下划线开头)
+                    bool looksLikeSignature = (c0 >= 'A' && c0 <= 'Z') || (c0 >= '0' && c0 <= '9');
+                    if (looksLikeSignature && (c3 == '_' || c2 == '_'))
+                    {
+                        _logDetail(string.Format("  → 检测到签名头: {0}{1}{2}{3} (文件系统可能在后面)", c0, c1, c2, c3));
+                        return "signed";  // 返回 signed 表示需要在后面偏移查找
+                    }
+                }
+            }
+
+            return "unknown";
+        }
+
+        #endregion
+
+        #region 从设备在线读取 build.prop
+
+        /// <summary>
+        /// 从设备在线读取 build.prop (适配所有安卓版本)
+        /// </summary>
+        /// <param name="readPartition">从指定分区名称读取数据的委托</param>
+        /// <param name="activeSlot">当前活动槽位 (a/b)</param>
+        /// <param name="hasSuper">是否存在 super 分区</param>
+        /// <param name="superStartSector">super 的物理起始扇区</param>
+        /// <param name="physicalSectorSize">扇区大小</param>
+        /// <param name="vendorName">设备厂商名称 (可选，用于过滤分区)</param>
+        /// <returns>解析后的 build.prop 信息</returns>
+        public async Task<BuildPropInfo> ReadBuildPropFromDevice(
+            Func<string, long, int, Task<byte[]>> readPartition, 
+            string activeSlot = "", 
+            bool hasSuper = true,
+            long superStartSector = 0,
+            int physicalSectorSize = 512,
+            string vendorName = "")
+        {
+            try
+            {
+                BuildPropInfo finalInfo = null;
+
+                if (hasSuper)
+                {
+                    _log("正在从 Super 分区逻辑卷解析 build.prop...");
+                    
+                    // 使用 Task.Run 将同步操作放到线程池执行，避免 UI 线程死锁
+                    // 设置 5 秒超时，防止卡死
+                    var superReadTask = Task.Run(() => 
+                    {
+                        // 包装委托以符合 LP 解析器要求的格式 (从 super 分区读取偏移)
+                        DeviceReadDelegate readFromSuper = (offset, size) => {
+                            try
+                            {
+                                var task = readPartition("super", offset, size);
+                                // 使用带超时的 Wait，防止单次读取卡死
+                                if (!task.Wait(TimeSpan.FromSeconds(10)))
+                                {
+                                    return null;
+                                }
+                                return task.Result;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logDetail($"读取 super 分区异常: {ex.Message}");
+                                return null;
+                            }
+                        };
+                        return ReadBuildPropFromSuper(readFromSuper, activeSlot, superStartSector, physicalSectorSize);
+                    });
+                    
+                    // 整体超时 30 秒
+                    var completedTask = await Task.WhenAny(superReadTask, Task.Delay(30000)).ConfigureAwait(false);
+                    if (completedTask == superReadTask)
+                    {
+                        // 任务已完成，安全获取结果
+                        finalInfo = await superReadTask.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _log("从 Super 分区读取超时 (30秒)，跳过");
+                    }
+                }
+
+                // 如果从 Super 已经获取到基本信息，只扫描增强分区
+                // 如果 Super 读取失败，扫描所有物理分区
+                bool hasBasicInfo = finalInfo != null && 
+                    (!string.IsNullOrEmpty(finalInfo.Model) || !string.IsNullOrEmpty(finalInfo.MarketName));
+                
+                if (hasBasicInfo)
+                {
+                    _log("从 Super 获取到基本信息，跳过物理分区扫描");
+                    return finalInfo;
+                }
+
+                _log("正在扫描物理分区以提取 build.prop...");
+                var searchPartitions = new List<string>();
+                
+                // 过滤无效的槽位值
+                string normalizedSlot = activeSlot;
+                if (string.IsNullOrEmpty(normalizedSlot) || 
+                    normalizedSlot == "undefined" || 
+                    normalizedSlot == "unknown" || 
+                    normalizedSlot == "nonexistent")
+                {
+                    normalizedSlot = "";
+                }
+                string slotSuffix = string.IsNullOrEmpty(normalizedSlot) ? "" : "_" + normalizedSlot.ToLower().TrimStart('_');
+
+                // 传统分区结构：优先扫描 system/vendor 分区
+                if (!hasSuper)
+                {
+                    if (!string.IsNullOrEmpty(slotSuffix))
+                    {
+                        searchPartitions.Add("system" + slotSuffix);
+                        searchPartitions.Add("vendor" + slotSuffix);
+                    }
+                    searchPartitions.Add("system");
+                    searchPartitions.Add("vendor");
+                }
+                
+                // 其他独立物理分区
+                if (!string.IsNullOrEmpty(slotSuffix))
+                {
+                    searchPartitions.Add("my_manifest" + slotSuffix);
+                }
+                searchPartitions.Add("my_manifest");
+                searchPartitions.Add("cust");
+                searchPartitions.Add("lenovocust");
+                
+                // 如果是没有 super 的旧设备，尝试更多分区
+                if (!hasSuper)
+                {
+                    // 小米旧设备可能有 persist 分区包含设备信息
+                    searchPartitions.Add("persist");
+                    // product 分区可能包含 build.prop
+                    if (!string.IsNullOrEmpty(slotSuffix))
+                        searchPartitions.Add("product" + slotSuffix);
+                    searchPartitions.Add("product");
+                    // odm 分区
+                    if (!string.IsNullOrEmpty(slotSuffix))
+                        searchPartitions.Add("odm" + slotSuffix);
+                    searchPartitions.Add("odm");
+                }
+                
+                _log(string.Format("  将扫描 {0} 个分区", searchPartitions.Count));
+
+                foreach (var partName in searchPartitions)
+                {
+                    var info = await ReadBuildPropFromStandalonePartition(partName, readPartition);
+                    if (info != null)
+                    {
+                        if (finalInfo == null) finalInfo = info;
+                        else MergeProperties(finalInfo, info);
+                        
+                        // 如果已经拿到了核心型号，提前结束
+                        if (!string.IsNullOrEmpty(finalInfo.MarketName) || !string.IsNullOrEmpty(finalInfo.Model))
+                            break;
+                    }
+                }
+                return finalInfo;
+            }
+            catch (Exception ex)
+            {
+                _log(string.Format("读取 build.prop 整体流程失败: {0}", ex.Message));
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 从 Super 分区逻辑卷读取 build.prop (精准合并模式)
+        /// </summary>
+        private BuildPropInfo ReadBuildPropFromSuper(DeviceReadDelegate readFromSuper, string activeSlot = "", long superStartSector = 0, int physicalSectorSize = 512)
+        {
+            var masterInfo = new BuildPropInfo();
+            try
+            {
+                // 1. 解析 LP Metadata
+                var lpPartitions = ParseLpMetadataFromDevice(readFromSuper, superStartSector, physicalSectorSize);
+                if (lpPartitions == null || lpPartitions.Count == 0) return null;
+
+                // 过滤无效的槽位值
+                string normalizedSlot = activeSlot;
+                if (string.IsNullOrEmpty(normalizedSlot) || 
+                    normalizedSlot == "undefined" || 
+                    normalizedSlot == "unknown" || 
+                    normalizedSlot == "nonexistent")
+                {
+                    normalizedSlot = "";
+                }
+                string slotSuffix = string.IsNullOrEmpty(normalizedSlot) ? "" : "_" + normalizedSlot.ToLower().TrimStart('_');
+                
+                // 2. 优先级排序：从低到高读取，高优先级覆盖低优先级
+                // 顺序：System -> System_ext -> Product -> Vendor -> ODM -> My_manifest
+                var searchList = new List<string> { "system", "system_ext", "product", "vendor", "odm", "my_manifest" };
+                
+                foreach (var baseName in searchList)
+                {
+                    // 尝试带槽位的名称和不带槽位的名称
+                    var possibleNames = new[] { baseName + slotSuffix, baseName };
+                    foreach (var name in possibleNames)
+                    {
+                        var targetPartition = lpPartitions.FirstOrDefault(p => p.Name == name);
+                        if (targetPartition == null) continue;
+
+                        _log(string.Format("正在从逻辑卷 {0} (物理扇区: {1}) 解析 build.prop...", 
+                            targetPartition.Name, targetPartition.AbsoluteSector));
+                        
+                        // 换算逻辑分区在 super 内的字节偏移 (ParseLpMetadataFromDevice 已经算好了 RelativeSector)
+                        long byteOffsetInSuper = targetPartition.RelativeSector * 512;
+                        
+                        // 尝试正常文件系统解析
+                        BuildPropInfo partInfo = null;
+                        
+                        // 逻辑修改：由于 fsType 在此处未定义，我们需要先探测分区头
+                        var headerData = readFromSuper(byteOffsetInSuper, 4096);
+                        if (headerData != null && headerData.Length >= 4096)
+                        {
+                            uint magic = BitConverter.ToUInt32(headerData, 1024); // EROFS magic at 1024
+                            if (magic == EROFS_MAGIC)
+                                partInfo = ParseErofsAndFindBuildProp(readFromSuper, targetPartition, byteOffsetInSuper);
+                            else
+                                partInfo = ParseExt4AndFindBuildProp(readFromSuper, targetPartition, byteOffsetInSuper);
+                        }
+
+                        // 兜底策略：如果文件系统解析失败，且分区很小 (如 my_manifest < 2MB)，进行暴力属性扫描
+                        if (partInfo == null && targetPartition.Size < 2 * 1024 * 1024)
+                        {
+                            _logDetail(string.Format("尝试对逻辑卷 {0} 进行暴力属性扫描...", targetPartition.Name));
+                            byte[] rawData = readFromSuper(byteOffsetInSuper, (int)targetPartition.Size);
+                            if (rawData != null)
+                            {
+                                string content = Encoding.UTF8.GetString(rawData);
+                                partInfo = ParseBuildProp(content);
+                            }
+                        }
+
+                        if (partInfo != null)
+                        {
+                            MergeProperties(masterInfo, partInfo);
+                        }
+                        break; // 找到带/不带槽位的一个即可
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log("从 Super 精准读取失败: " + ex.Message);
+            }
+            // 只要有任何有效信息就返回，不仅仅检查 Model
+            bool hasValidInfo = !string.IsNullOrEmpty(masterInfo.Model) ||
+                               !string.IsNullOrEmpty(masterInfo.MarketName) ||
+                               !string.IsNullOrEmpty(masterInfo.Brand) ||
+                               !string.IsNullOrEmpty(masterInfo.Device);
+            return hasValidInfo ? masterInfo : null;
+        }
+
+        /// <summary>
+        /// 属性合并：高优先级覆盖低优先级，确保信息精准
+        /// </summary>
+        private void MergeProperties(BuildPropInfo target, BuildPropInfo source)
+        {
+            if (source == null) return;
+
+            // 1. 品牌/型号：这些属性通常在 vendor/odm 中最准
+            if (!string.IsNullOrEmpty(source.Brand)) target.Brand = source.Brand;
+            if (!string.IsNullOrEmpty(source.Model)) target.Model = source.Model;
+            if (!string.IsNullOrEmpty(source.MarketName)) target.MarketName = source.MarketName;
+            if (!string.IsNullOrEmpty(source.MarketNameEn)) target.MarketNameEn = source.MarketNameEn;
+            if (!string.IsNullOrEmpty(source.Device)) target.Device = source.Device;
+            if (!string.IsNullOrEmpty(source.Manufacturer)) target.Manufacturer = source.Manufacturer;
+
+            // 2. 版本信息：system 提供 Android 版本，但 vendor 提供安全补丁和 OTA 版本
+            if (!string.IsNullOrEmpty(source.AndroidVersion)) target.AndroidVersion = source.AndroidVersion;
+            if (!string.IsNullOrEmpty(source.SdkVersion)) target.SdkVersion = source.SdkVersion;
+            if (!string.IsNullOrEmpty(source.SecurityPatch)) target.SecurityPatch = source.SecurityPatch;
+            
+            // 3. OTA 版本精准合并
+            if (!string.IsNullOrEmpty(source.DisplayId)) target.DisplayId = source.DisplayId;
+            if (!string.IsNullOrEmpty(source.OtaVersion)) target.OtaVersion = source.OtaVersion;
+            if (!string.IsNullOrEmpty(source.OtaVersionFull)) target.OtaVersionFull = source.OtaVersionFull;
+            if (!string.IsNullOrEmpty(source.BuildDate)) target.BuildDate = source.BuildDate;
+            if (!string.IsNullOrEmpty(source.BuildUtc)) target.BuildUtc = source.BuildUtc;
+            
+            // 4. 厂商特有属性
+            if (!string.IsNullOrEmpty(source.OplusProject)) target.OplusProject = source.OplusProject;
+            if (!string.IsNullOrEmpty(source.OplusNvId)) target.OplusNvId = source.OplusNvId;
+            if (!string.IsNullOrEmpty(source.OplusCpuInfo)) target.OplusCpuInfo = source.OplusCpuInfo;
+            if (!string.IsNullOrEmpty(source.LenovoSeries)) target.LenovoSeries = source.LenovoSeries;
+
+            // 5. 合并全量字典
+            foreach (var kv in source.AllProperties)
+            {
+                target.AllProperties[kv.Key] = kv.Value;
+            }
+        }
+
+        /// <summary>
+        /// 从独立物理分区读取 build.prop
+        /// </summary>
+        private async Task<BuildPropInfo> ReadBuildPropFromStandalonePartition(string partitionName, Func<string, long, int, Task<byte[]>> readPartition)
+        {
+            try
+            {
+                _log(string.Format("尝试从物理分区 {0} 读取...", partitionName));
+                
+                // 读取头部探测文件系统 (已有超时保护)
+                byte[] header = await readPartition(partitionName, 0, 4096);
+                if (header == null) 
+                {
+                    _log(string.Format("  → {0}: 无法读取头部数据", partitionName));
+                    return null;
+                }
+
+                string fsType = DetectFileSystem(header);
+                long fsBaseOffset = 0;  // 文件系统的实际起始偏移
+                
+                // 如果检测到 sparse 格式，尝试跳过 sparse 头后重新检测
+                if (fsType == "sparse")
+                {
+                    _log(string.Format("  → {0}: 检测到 Sparse 格式，跳过头部重新检测...", partitionName));
+                    byte[] moreData = await readPartition(partitionName, 4096, 4096);
+                    if (moreData != null && moreData.Length > 1024)
+                    {
+                        fsType = DetectFileSystem(moreData);
+                        if (fsType != "unknown" && fsType != "sparse")
+                        {
+                            _log(string.Format("  → {0}: Sparse 内部为 {1} 文件系统", partitionName, fsType.ToUpper()));
+                            fsBaseOffset = 4096;
+                        }
+                    }
+                }
+                
+                // erofs_raw 表示 EROFS 魔数在偏移 0，需要调整读取偏移
+                if (fsType == "erofs_raw")
+                {
+                    fsType = "erofs";
+                    _logDetail(string.Format("  → {0}: 检测到无偏移 EROFS 文件系统", partitionName));
+                }
+                
+                // 如果检测到 empty、unknown 或 signed，尝试在不同偏移处查找文件系统
+                // 某些设备在分区头部有签名/AVB数据，真正的文件系统在后面
+                if (fsType == "unknown" || fsType == "empty" || fsType == "signed")
+                {
+                    // 尝试常见的偏移位置: 4KB, 8KB, 64KB, 1MB, 2MB, 4MB
+                    // 小米等厂商可能在分区头部有签名头 (如 S72_ 等)
+                    long[] tryOffsets = { 4096, 8192, 65536, 1048576, 2097152, 4194304 };
+                    foreach (var offset in tryOffsets)
+                    {
+                        byte[] dataAtOffset = await readPartition(partitionName, offset, 4096);
+                        if (dataAtOffset != null && dataAtOffset.Length >= 2048)
+                        {
+                            string fsAtOffset = DetectFileSystem(dataAtOffset);
+                            if (fsAtOffset != "unknown" && fsAtOffset != "empty" && fsAtOffset != "sparse")
+                            {
+                                _logDetail(string.Format("  → {0}: 在偏移 0x{1:X} 处检测到 {2} 文件系统", 
+                                    partitionName, offset, fsAtOffset.ToUpper()));
+                                fsType = fsAtOffset;
+                                fsBaseOffset = offset;  // 记录文件系统的实际偏移
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (fsType == "unknown" || fsType == "sparse" || fsType == "empty" || fsType == "signed") 
+                {
+                    _log(string.Format("  → {0}: 未识别的文件系统格式，尝试暴力扫描...", partitionName));
+                    
+                    // 暴力扫描：直接在分区数据中搜索 build.prop 属性
+                    var bruteForceResult = await BruteForceScanPartition(partitionName, readPartition);
+                    if (bruteForceResult != null)
+                    {
+                        _log(string.Format("  → {0}: 暴力扫描成功", partitionName));
+                        return bruteForceResult;
+                    }
+                    return null;
+                }
+                
+                _logDetail(string.Format("  → {0}: 检测到 {1} 文件系统 (偏移=0x{2:X})，正在解析...", 
+                    partitionName, fsType.ToUpper(), fsBaseOffset));
+
+                var lpInfo = new LpPartitionInfo { Name = partitionName, RelativeSector = 0, FileSystem = fsType };
+                
+                // 使用 Task.Run 避免同步 Wait() 导致 UI 线程死锁
+                // 设置 15 秒超时
+                // 关键修复：使用 fsBaseOffset 调整读取偏移
+                long capturedBaseOffset = fsBaseOffset;  // 捕获偏移量用于闭包
+                string capturedPartName = partitionName;  // 捕获分区名
+                var parseTask = Task.Run(() => 
+                {
+                    DeviceReadDelegate readDelegate = (offset, size) => {
+                        // 增加重试机制，提高 I/O 稳定性
+                        for (int retry = 0; retry < 3; retry++)
+                        {
+                            try
+                            {
+                                // 关键：在文件系统基础偏移上添加请求的偏移
+                                var t = readPartition(capturedPartName, capturedBaseOffset + offset, size);
+                                // system 分区读取较慢，增加超时时间
+                                int readTimeoutSec = capturedPartName.Contains("system") ? 15 : 10;
+                                if (!t.Wait(TimeSpan.FromSeconds(readTimeoutSec)))
+                                {
+                                    if (retry < 2)
+                                    {
+                                        System.Threading.Thread.Sleep(200);  // 短暂等待后重试
+                                        continue;
+                                    }
+                                    return null;
+                                }
+                                if (t.Result != null && t.Result.Length > 0)
+                                    return t.Result;
+                            }
+                            catch (Exception ex)
+                            {
+                                if (retry < 2)
+                                {
+                                    System.Threading.Thread.Sleep(200);
+                                    continue;
+                                }
+                                _logDetail(string.Format("读取分区数据失败: {0}", ex.Message));
+                            }
+                        }
+                        return null;
+                    };
+
+                    if (fsType == "erofs")
+                        return ParseErofsAndFindBuildProp(readDelegate, lpInfo);
+                    else if (fsType == "ext4")
+                        return ParseExt4AndFindBuildProp(readDelegate, lpInfo);
+                    return null;
+                });
+
+                // system 分区较大，需要更长超时时间
+                int timeoutMs = partitionName.Contains("system") ? 30000 : 20000;
+                var completedTask = await Task.WhenAny(parseTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
+                if (completedTask == parseTask)
+                    return await parseTask.ConfigureAwait(false);
+                
+                _log(string.Format("解析分区 {0} 超时 ({1}秒)", partitionName, timeoutMs / 1000));
+            }
+            catch (Exception ex) 
+            { 
+                _logDetail($"解析分区 build.prop 异常: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 暴力扫描分区数据，直接搜索 build.prop 属性
+        /// 用于文件系统无法识别的情况
+        /// </summary>
+        private async Task<BuildPropInfo> BruteForceScanPartition(string partitionName, Func<string, long, int, Task<byte[]>> readPartition)
+        {
+            try
+            {
+                // 分区可能很大，只扫描前 16MB
+                const int maxScanSize = 16 * 1024 * 1024;
+                const int chunkSize = 512 * 1024;  // 每次读取 512KB
+                
+                var foundProps = new List<string>();
+                
+                for (long offset = 0; offset < maxScanSize; offset += chunkSize)
+                {
+                    byte[] chunk = await readPartition(partitionName, offset, chunkSize);
+                    if (chunk == null || chunk.Length == 0)
+                        break;
+                    
+                    // 转换为字符串并搜索属性
+                    string content = Encoding.UTF8.GetString(chunk);
+                    
+                    // 搜索常见的 build.prop 属性
+                    var patterns = new[] {
+                        @"ro\.product\.model=[^\r\n\x00]+",
+                        @"ro\.product\.brand=[^\r\n\x00]+",
+                        @"ro\.product\.name=[^\r\n\x00]+",
+                        @"ro\.product\.device=[^\r\n\x00]+",
+                        @"ro\.product\.manufacturer=[^\r\n\x00]+",
+                        @"ro\.product\.marketname=[^\r\n\x00]+",
+                        @"ro\.build\.display\.id=[^\r\n\x00]+",
+                        @"ro\.build\.version\.release=[^\r\n\x00]+",
+                        @"ro\.build\.version\.sdk=[^\r\n\x00]+",
+                        @"ro\.miui\.ui\.version\.[^\r\n\x00]+",
+                        @"ro\.build\.MiFavor_version=[^\r\n\x00]+"
+                    };
+                    
+                    foreach (var pattern in patterns)
+                    {
+                        var matches = System.Text.RegularExpressions.Regex.Matches(content, pattern);
+                        foreach (System.Text.RegularExpressions.Match m in matches)
+                        {
+                            if (!foundProps.Contains(m.Value))
+                                foundProps.Add(m.Value);
+                        }
+                    }
+                    
+                    // 如果找到足够多的属性，提前结束
+                    if (foundProps.Count >= 5)
+                        break;
+                }
+                
+                if (foundProps.Count > 0)
+                {
+                    _log(string.Format("    暴力扫描找到 {0} 个属性", foundProps.Count));
+                    string combined = string.Join("\n", foundProps);
+                    return ParseBuildProp(combined);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail(string.Format("暴力扫描失败: {0}", ex.Message));
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 从 EROFS 分区解析 build.prop
+        /// </summary>
+        private BuildPropInfo ParseErofsAndFindBuildProp(DeviceReadDelegate readFromSuper, LpPartitionInfo partition, long baseOffset = 0)
+        {
+            try
+            {
+                // 创建一个读取委托，将偏移转换为分区内的绝对偏移
+                DeviceReadDelegate readFromPartition = (offset, size) =>
+                {
+                    return readFromSuper(baseOffset + offset, size);
+                };
+
+                // 读取 EROFS superblock
+                var sbData = readFromPartition(1024, 128);
+                if (sbData == null || sbData.Length < 128)
+                {
+                    _log("无法读取 EROFS superblock");
+                    return null;
+                }
+
+                // 验证 EROFS magic
+                bool isErofs = (sbData[0] == 0xE2 && sbData[1] == 0xE1 &&
+                               sbData[2] == 0xF5 && sbData[3] == 0xE0);
+                if (!isErofs)
+                {
+                    _log("无效的 EROFS superblock");
+                    return null;
+                }
+
+                // 解析 superblock 参数
+                byte blkSzBits = sbData[0x0C];
+                ushort rootNid = BitConverter.ToUInt16(sbData, 0x0E);
+                uint metaBlkAddr = BitConverter.ToUInt32(sbData, 0x28);
+                uint blockSize = 1u << blkSzBits;
+
+                _logDetail(string.Format("EROFS: BlockSize={0}, RootNid={1}, MetaBlkAddr={2}", 
+                    blockSize, rootNid, metaBlkAddr));
+
+                // 读取根目录 inode
+                long rootInodeOffset = (long)metaBlkAddr * blockSize + (long)rootNid * 32;
+                var inodeData = readFromPartition(rootInodeOffset, 64);
+                if (inodeData == null || inodeData.Length < 32)
+                {
+                    _log("无法读取根目录 inode");
+                    return null;
+                }
+
+                // 解析 inode
+                ushort format = BitConverter.ToUInt16(inodeData, 0);
+                bool isExtended = (format & 1) == 1;
+                byte dataLayout = (byte)((format >> 1) & 0x7);
+                ushort mode = BitConverter.ToUInt16(inodeData, 0x04);
+
+                // 检查是否是目录
+                if ((mode & 0xF000) != 0x4000)
+                {
+                    _log("根 inode 不是目录");
+                    return null;
+                }
+
+                long dirSize = isExtended ? BitConverter.ToInt64(inodeData, 0x08) : BitConverter.ToUInt32(inodeData, 0x08);
+                uint rawBlkAddr = BitConverter.ToUInt32(inodeData, 0x10);
+                int inodeSize = isExtended ? 64 : 32;
+                ushort xattrCount = BitConverter.ToUInt16(inodeData, 0x02);
+                int xattrSize = xattrCount > 0 ? (xattrCount - 1) * 4 + 12 : 0;
+                int inlineDataOffset = inodeSize + xattrSize;
+
+                _log(string.Format("  EROFS 根目录: layout={0}, size={1}", dataLayout, dirSize));
+
+                // 读取目录数据
+                byte[] dirData = null;
+                if (dataLayout == 2) // FLAT_INLINE - 数据内联在 inode 中
+                {
+                    int totalSize = inlineDataOffset + (int)Math.Min(dirSize, blockSize);
+                    var inodeAndData = readFromPartition(rootInodeOffset, totalSize);
+                    if (inodeAndData != null && inodeAndData.Length > inlineDataOffset)
+                    {
+                        int dataLen = Math.Min((int)dirSize, inodeAndData.Length - inlineDataOffset);
+                        dirData = new byte[dataLen];
+                        Array.Copy(inodeAndData, inlineDataOffset, dirData, 0, dataLen);
+                    }
+                }
+                else if (dataLayout == 0) // FLAT_PLAIN - 数据在连续块中
+                {
+                    long dataOffset = (long)rawBlkAddr * blockSize;
+                    dirData = readFromPartition(dataOffset, (int)Math.Min(dirSize, blockSize * 2));
+                }
+                else if (dataLayout == 3 || dataLayout == 1) // FLAT_COMPR (3) 或 FLAT_COMPR_LEGACY (1) - 压缩数据
+                {
+                    _log("  检测到压缩 EROFS，尝试 LZ4 解压...");
+                    dirData = ReadErofsCompressedData(readFromPartition, inodeData, isExtended, rawBlkAddr, blockSize, dirSize, metaBlkAddr);
+                }
+
+                if (dirData == null || dirData.Length < 12)
+                {
+                    _log(string.Format("  无法读取目录数据 (layout={0})", dataLayout));
+                    return null;
+                }
+
+                // 解析目录项并查找 build.prop 或 etc 目录
+                var entries = ParseErofsDirectoryEntries(dirData, dirSize);
+                _log(string.Format("  EROFS 根目录包含 {0} 个条目", entries.Count));
+                
+                // 打印前几个条目帮助调试
+                int debugCount = 0;
+                foreach (var entry in entries)
+                {
+                    if (debugCount++ < 8)
+                        _logDetail(string.Format("    - {0} (type={1})", entry.Item2, entry.Item3));
+                }
+
+                // 先在根目录查找 build.prop
+                foreach (var entry in entries)
+                {
+                    if (entry.Item2 == "build.prop" && entry.Item3 == 1)
+                    {
+                        _logDetail("找到 /build.prop");
+                        return ReadErofsFile(readFromPartition, metaBlkAddr, blockSize, entry.Item1);
+                    }
+                }
+
+                // 在子目录查找 build.prop (优先级: /system > /etc)
+                // 对于 system 分区，build.prop 可能在 /system/ 子目录
+                string[] searchDirs = { "system", "etc" };
+                foreach (var dirName in searchDirs)
+                {
+                    foreach (var entry in entries)
+                    {
+                        if (entry.Item2 == dirName && entry.Item3 == 2)
+                        {
+                            _log(string.Format("  进入 /{0} 目录搜索...", dirName));
+                            var subEntries = ReadErofsDirectory(readFromPartition, metaBlkAddr, blockSize, entry.Item1);
+                            foreach (var subEntry in subEntries)
+                            {
+                                if (subEntry.Item2 == "build.prop" && subEntry.Item3 == 1)
+                                {
+                                    _logDetail(string.Format("找到 /{0}/build.prop", dirName));
+                                    return ReadErofsFile(readFromPartition, metaBlkAddr, blockSize, subEntry.Item1);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _logDetail("未找到 build.prop");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _log(string.Format("解析 EROFS 失败: {0}", ex.Message));
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 读取 EROFS 压缩数据 (FLAT_COMPR/FLAT_COMPR_LEGACY)
+        /// 支持 LZ4 和 LZMA 压缩
+        /// </summary>
+        private byte[] ReadErofsCompressedData(DeviceReadDelegate read, byte[] inodeData, bool isExtended, 
+            uint rawBlkAddr, uint blockSize, long uncompressedSize, uint metaBlkAddr)
+        {
+            try
+            {
+                // EROFS 压缩格式：
+                // - 压缩数据存储在连续的块中
+                // - 每个压缩块有一个 cluster 头描述压缩信息
+                // - 使用 Z_EROFS_COMPR_HEAD_SIZE = 4 字节头
+                
+                long dataOffset = (long)rawBlkAddr * blockSize;
+                
+                // 读取足够多的数据（压缩后通常更小，但我们读取原始大小的数据）
+                int readSize = (int)Math.Min(uncompressedSize * 2, blockSize * 4);
+                byte[] compressedData = read(dataOffset, readSize);
+                
+                if (compressedData == null || compressedData.Length == 0)
+                {
+                    _logDetail("无法读取压缩数据");
+                    return null;
+                }
+
+                // 检测压缩类型
+                // EROFS 压缩块格式：[压缩头 4字节][压缩数据]
+                // 压缩头: 第一个字节标识压缩算法
+                // 0x01 = LZ4, 0x02 = LZMA/MicroLZMA
+
+                // 尝试方法1: 直接 LZ4 解压 (无头)
+                byte[] result = Lz4Decoder.Decompress(compressedData, (int)uncompressedSize);
+                if (result != null && result.Length > 0 && IsValidDirectoryData(result))
+                {
+                    _log("  LZ4 解压成功 (无头格式)");
+                    return result;
+                }
+
+                // 尝试方法2: 跳过 4 字节压缩头
+                if (compressedData.Length > 4)
+                {
+                    result = Lz4Decoder.Decompress(compressedData, 4, compressedData.Length - 4, (int)uncompressedSize);
+                    if (result != null && result.Length > 0 && IsValidDirectoryData(result))
+                    {
+                        _log("  LZ4 解压成功 (4字节头)");
+                        return result;
+                    }
+                }
+
+                // 尝试方法3: EROFS 块格式解压
+                result = Lz4Decoder.DecompressErofsBlock(compressedData, (int)uncompressedSize);
+                if (result != null && result.Length > 0 && IsValidDirectoryData(result))
+                {
+                    _log("  LZ4 解压成功 (EROFS 块格式)");
+                    return result;
+                }
+
+                // 尝试方法4: 扫描数据中的 LZ4 块
+                for (int offset = 0; offset < Math.Min(32, compressedData.Length - 16); offset++)
+                {
+                    result = Lz4Decoder.Decompress(compressedData, offset, compressedData.Length - offset, (int)uncompressedSize);
+                    if (result != null && result.Length > 0 && IsValidDirectoryData(result))
+                    {
+                        _log(string.Format("  LZ4 解压成功 (偏移 {0})", offset));
+                        return result;
+                    }
+                }
+
+                _log("  LZ4 解压失败，压缩格式可能不支持");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logDetail(string.Format("解压失败: {0}", ex.Message));
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 读取 EROFS 压缩文件数据
+        /// </summary>
+        private byte[] ReadErofsCompressedFileData(DeviceReadDelegate read, uint rawBlkAddr, uint blockSize, long uncompressedSize)
+        {
+            try
+            {
+                long dataOffset = (long)rawBlkAddr * blockSize;
+                
+                // 读取压缩数据（build.prop 通常很小，压缩后更小）
+                int readSize = (int)Math.Min(uncompressedSize * 2, blockSize * 4);
+                byte[] compressedData = read(dataOffset, readSize);
+                
+                if (compressedData == null || compressedData.Length == 0)
+                    return null;
+
+                // 尝试多种解压方式
+                byte[] result;
+
+                // 方法1: 直接 LZ4 解压
+                result = Lz4Decoder.Decompress(compressedData, (int)uncompressedSize);
+                if (result != null && result.Length > 0 && IsValidTextFile(result))
+                    return result;
+
+                // 方法2: 跳过 4 字节压缩头
+                if (compressedData.Length > 4)
+                {
+                    result = Lz4Decoder.Decompress(compressedData, 4, compressedData.Length - 4, (int)uncompressedSize);
+                    if (result != null && result.Length > 0 && IsValidTextFile(result))
+                        return result;
+                }
+
+                // 方法3: EROFS 块格式
+                result = Lz4Decoder.DecompressErofsBlock(compressedData, (int)uncompressedSize);
+                if (result != null && result.Length > 0 && IsValidTextFile(result))
+                    return result;
+
+                // 方法4: 扫描偏移
+                for (int offset = 1; offset < Math.Min(16, compressedData.Length - 16); offset++)
+                {
+                    result = Lz4Decoder.Decompress(compressedData, offset, compressedData.Length - offset, (int)uncompressedSize);
+                    if (result != null && result.Length > 0 && IsValidTextFile(result))
+                        return result;
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 验证是否像文本文件（build.prop）
+        /// </summary>
+        private bool IsValidTextFile(byte[] data)
+        {
+            if (data == null || data.Length < 10)
+                return false;
+
+            // build.prop 应该包含大量可打印 ASCII 字符
+            int printableCount = 0;
+            int checkLen = Math.Min(data.Length, 256);
+            
+            for (int i = 0; i < checkLen; i++)
+            {
+                byte b = data[i];
+                if ((b >= 0x20 && b <= 0x7E) || b == 0x0A || b == 0x0D || b == 0x09)
+                    printableCount++;
+            }
+
+            // 至少 80% 应该是可打印字符
+            return (printableCount * 100 / checkLen) >= 80;
+        }
+
+        /// <summary>
+        /// 验证解压后的数据是否像目录数据
+        /// </summary>
+        private bool IsValidDirectoryData(byte[] data)
+        {
+            if (data == null || data.Length < 12)
+                return false;
+
+            // EROFS 目录格式：前 8 字节是 nid，8-9 字节是 nameoff
+            ushort firstNameOff = BitConverter.ToUInt16(data, 8);
+            
+            // nameoff 应该是 12 的倍数且不为 0
+            if (firstNameOff == 0 || firstNameOff % 12 != 0 || firstNameOff > data.Length)
+                return false;
+
+            // 检查第一个条目的 nid 是否合理
+            ulong firstNid = BitConverter.ToUInt64(data, 0);
+            if (firstNid > 0xFFFFFFFF)  // nid 通常不会太大
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// 读取 EROFS 目录
+        /// </summary>
+        private List<Tuple<ulong, string, byte>> ReadErofsDirectory(DeviceReadDelegate read, uint metaBlkAddr, uint blockSize, ulong nid)
+        {
+            var entries = new List<Tuple<ulong, string, byte>>();
+            try
+            {
+                long inodeOffset = (long)metaBlkAddr * blockSize + (long)nid * 32;
+                var inodeData = read(inodeOffset, 64);
+                if (inodeData == null || inodeData.Length < 32) return entries;
+
+                ushort format = BitConverter.ToUInt16(inodeData, 0);
+                bool isExtended = (format & 1) == 1;
+                byte dataLayout = (byte)((format >> 1) & 0x7);
+                ushort mode = BitConverter.ToUInt16(inodeData, 0x04);
+
+                if ((mode & 0xF000) != 0x4000) return entries; // 不是目录
+
+                long dirSize = isExtended ? BitConverter.ToInt64(inodeData, 0x08) : BitConverter.ToUInt32(inodeData, 0x08);
+                uint rawBlkAddr = BitConverter.ToUInt32(inodeData, 0x10);
+                int inodeSize = isExtended ? 64 : 32;
+                ushort xattrCount = BitConverter.ToUInt16(inodeData, 0x02);
+                int xattrSize = xattrCount > 0 ? (xattrCount - 1) * 4 + 12 : 0;
+                int inlineDataOffset = inodeSize + xattrSize;
+
+                byte[] dirData = null;
+                if (dataLayout == 2) // FLAT_INLINE
+                {
+                    int totalSize = inlineDataOffset + (int)Math.Min(dirSize, blockSize);
+                    var inodeAndData = read(inodeOffset, totalSize);
+                    if (inodeAndData != null && inodeAndData.Length > inlineDataOffset)
+                    {
+                        int dataLen = Math.Min((int)dirSize, inodeAndData.Length - inlineDataOffset);
+                        dirData = new byte[dataLen];
+                        Array.Copy(inodeAndData, inlineDataOffset, dirData, 0, dataLen);
+                    }
+                }
+                else if (dataLayout == 0) // FLAT_PLAIN
+                {
+                    long dataOffset = (long)rawBlkAddr * blockSize;
+                    dirData = read(dataOffset, (int)Math.Min(dirSize, blockSize * 2));
+                }
+                else if (dataLayout == 3 || dataLayout == 1) // FLAT_COMPR 压缩
+                {
+                    dirData = ReadErofsCompressedData(read, inodeData, isExtended, rawBlkAddr, blockSize, dirSize, metaBlkAddr);
+                }
+
+                if (dirData != null)
+                {
+                    entries = ParseErofsDirectoryEntries(dirData, dirSize);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EROFS] 读取目录异常: {ex.Message}");
+            }
+            return entries;
+        }
+
+        /// <summary>
+        /// 解析 EROFS 目录项
+        /// </summary>
+        private List<Tuple<ulong, string, byte>> ParseErofsDirectoryEntries(byte[] dirData, long dirSize)
+        {
+            var entries = new List<Tuple<ulong, string, byte>>();
+            if (dirData == null || dirData.Length < 12) return entries;
+
+            try
+            {
+                ushort firstNameOff = BitConverter.ToUInt16(dirData, 8);
+                if (firstNameOff == 0 || firstNameOff > dirData.Length) return entries;
+
+                int direntCount = firstNameOff / 12;
+                var dirents = new List<Tuple<ulong, ushort, byte>>();
+
+                for (int i = 0; i < direntCount && i * 12 + 12 <= dirData.Length; i++)
+                {
+                    ulong entryNid = BitConverter.ToUInt64(dirData, i * 12);
+                    ushort nameOff = BitConverter.ToUInt16(dirData, i * 12 + 8);
+                    byte fileType = dirData[i * 12 + 10];
+                    dirents.Add(Tuple.Create(entryNid, nameOff, fileType));
+                }
+
+                for (int i = 0; i < dirents.Count; i++)
+                {
+                    var d = dirents[i];
+                    int nameEnd = (i + 1 < dirents.Count) ? dirents[i + 1].Item2 : Math.Min(dirData.Length, (int)dirSize);
+                    if (d.Item2 >= dirData.Length) continue;
+
+                    int nameLen = 0;
+                    for (int j = 0; j < nameEnd - d.Item2 && d.Item2 + j < dirData.Length; j++)
+                    {
+                        if (dirData[d.Item2 + j] == 0) break;
+                        nameLen++;
+                    }
+
+                    if (nameLen > 0)
+                    {
+                        string name = Encoding.UTF8.GetString(dirData, d.Item2, nameLen);
+                        entries.Add(Tuple.Create(d.Item1, name, d.Item3));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EROFS] 解析目录项异常: {ex.Message}");
+            }
+            return entries;
+        }
+
+        /// <summary>
+        /// 读取 EROFS 文件内容并解析为 BuildPropInfo
+        /// </summary>
+        private BuildPropInfo ReadErofsFile(DeviceReadDelegate read, uint metaBlkAddr, uint blockSize, ulong nid)
+        {
+            try
+            {
+                long inodeOffset = (long)metaBlkAddr * blockSize + (long)nid * 32;
+                var inodeData = read(inodeOffset, 64);
+                if (inodeData == null || inodeData.Length < 32) return null;
+
+                ushort format = BitConverter.ToUInt16(inodeData, 0);
+                bool isExtended = (format & 1) == 1;
+                byte dataLayout = (byte)((format >> 1) & 0x7);
+                ushort mode = BitConverter.ToUInt16(inodeData, 0x04);
+
+                if ((mode & 0xF000) != 0x8000) return null; // 不是普通文件
+
+                long fileSize = isExtended ? BitConverter.ToInt64(inodeData, 0x08) : BitConverter.ToUInt32(inodeData, 0x08);
+                uint rawBlkAddr = BitConverter.ToUInt32(inodeData, 0x10);
+                int inodeSize = isExtended ? 64 : 32;
+                ushort xattrCount = BitConverter.ToUInt16(inodeData, 0x02);
+                int xattrSize = xattrCount > 0 ? (xattrCount - 1) * 4 + 12 : 0;
+                int inlineDataOffset = inodeSize + xattrSize;
+
+                // 限制读取大小
+                int readSize = (int)Math.Min(fileSize, 64 * 1024);
+                byte[] fileData = null;
+
+                if (dataLayout == 2) // FLAT_INLINE
+                {
+                    int totalSize = inlineDataOffset + readSize;
+                    var inodeAndData = read(inodeOffset, totalSize);
+                    if (inodeAndData != null && inodeAndData.Length > inlineDataOffset)
+                    {
+                        int dataLen = Math.Min(readSize, inodeAndData.Length - inlineDataOffset);
+                        fileData = new byte[dataLen];
+                        Array.Copy(inodeAndData, inlineDataOffset, fileData, 0, dataLen);
+                    }
+                }
+                else if (dataLayout == 0) // FLAT_PLAIN
+                {
+                    long dataOffset = (long)rawBlkAddr * blockSize;
+                    fileData = read(dataOffset, readSize);
+                }
+                else if (dataLayout == 3 || dataLayout == 1) // FLAT_COMPR 压缩
+                {
+                    fileData = ReadErofsCompressedFileData(read, rawBlkAddr, blockSize, fileSize);
+                }
+
+                if (fileData != null && fileData.Length > 0)
+                {
+                    string content = Encoding.UTF8.GetString(fileData);
+                    return ParseBuildProp(content);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EROFS] 读取文件异常: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 从 EXT4 分区解析 build.prop
+        /// </summary>
+        private BuildPropInfo ParseExt4AndFindBuildProp(DeviceReadDelegate readFromSuper, LpPartitionInfo partition, long baseOffset = 0)
+        {
+            try
+            {
+                // 创建读取委托
+                DeviceReadDelegate readFromPartition = (offset, size) =>
+                {
+                    return readFromSuper(baseOffset + offset, size);
+                };
+
+                // 1. 读取 Superblock (偏移 1024，大小 1024)
+                var sbData = readFromPartition(1024, 1024);
+                if (sbData == null || sbData.Length < 256)
+                {
+                    _log("无法读取 EXT4 superblock");
+                    return null;
+                }
+
+                // 验证 magic
+                ushort magic = BitConverter.ToUInt16(sbData, 0x38);
+                if (magic != EXT4_MAGIC)
+                {
+                    _log(string.Format("无效的 EXT4 magic: 0x{0:X4}", magic));
+                    return null;
+                }
+
+                // 解析 superblock 参数
+                uint sLogBlockSize = BitConverter.ToUInt32(sbData, 0x18);
+                uint blockSize = 1024u << (int)sLogBlockSize;
+                uint inodesPerGroup = BitConverter.ToUInt32(sbData, 0x28);
+                ushort inodeSize = BitConverter.ToUInt16(sbData, 0x58);
+                uint firstDataBlock = BitConverter.ToUInt32(sbData, 0x14);
+                uint blocksPerGroup = BitConverter.ToUInt32(sbData, 0x20);
+                uint featureIncompat = BitConverter.ToUInt32(sbData, 0x60);
+
+                bool hasExtents = (featureIncompat & 0x40) != 0;  // EXT4_FEATURE_INCOMPAT_EXTENTS
+                bool is64Bit = (featureIncompat & 0x80) != 0;      // EXT4_FEATURE_INCOMPAT_64BIT
+
+                _logDetail(string.Format("EXT4: BlockSize={0}, InodeSize={1}, Extents={2}, 64bit={3}",
+                    blockSize, inodeSize, hasExtents, is64Bit));
+
+                // 2. 读取 Block Group Descriptor Table
+                long bgdtOffset = (firstDataBlock + 1) * blockSize;
+                int bgdSize = is64Bit ? 64 : 32;
+                var bgdData = readFromPartition(bgdtOffset, bgdSize);
+                if (bgdData == null || bgdData.Length < bgdSize)
+                {
+                    _log("无法读取 Block Group Descriptor");
+                    return null;
+                }
+
+                // 获取第一个块组的 inode 表位置
+                uint bgInodeTableLo = BitConverter.ToUInt32(bgdData, 0x08);
+                uint bgInodeTableHi = is64Bit ? BitConverter.ToUInt32(bgdData, 0x28) : 0;
+                long inodeTableBlock = bgInodeTableLo | ((long)bgInodeTableHi << 32);
+
+                _logDetail(string.Format("Inode Table Block: {0}", inodeTableBlock));
+
+                // 3. 读取根目录 inode (inode 2)
+                long inodeOffset = inodeTableBlock * blockSize + (2 - 1) * inodeSize;
+                var rootInode = readFromPartition(inodeOffset, inodeSize);
+                if (rootInode == null || rootInode.Length < 128)
+                {
+                    _log("无法读取根目录 inode");
+                    return null;
+                }
+
+                ushort iMode = BitConverter.ToUInt16(rootInode, 0x00);
+                if ((iMode & 0xF000) != 0x4000) // S_IFDIR
+                {
+                    _log("根 inode 不是目录");
+                    return null;
+                }
+
+                uint iSizeLo = BitConverter.ToUInt32(rootInode, 0x04);
+                uint iFlags = BitConverter.ToUInt32(rootInode, 0x20);
+                bool useExtents = (iFlags & 0x80000) != 0; // EXT4_EXTENTS_FL
+
+                // 4. 读取根目录数据
+                byte[] rootDirData = null;
+                if (useExtents)
+                {
+                    rootDirData = ReadExt4ExtentData(readFromPartition, rootInode, blockSize, (int)Math.Min(iSizeLo, blockSize * 4));
+                }
+                else
+                {
+                    // 直接块指针
+                    uint block0 = BitConverter.ToUInt32(rootInode, 0x28);
+                    if (block0 > 0)
+                    {
+                        rootDirData = readFromPartition((long)block0 * blockSize, (int)Math.Min(iSizeLo, blockSize * 4));
+                    }
+                }
+
+                if (rootDirData == null || rootDirData.Length < 12)
+                {
+                    _log("无法读取根目录数据");
+                    return null;
+                }
+
+                // 5. 解析目录项
+                var entries = ParseExt4DirectoryEntries(rootDirData);
+                _logDetail(string.Format("根目录包含 {0} 个条目", entries.Count));
+
+                // 在根目录查找 build.prop
+                foreach (var entry in entries)
+                {
+                    if (entry.Item2 == "build.prop" && entry.Item3 == 1) // 普通文件
+                    {
+                        _logDetail("找到 /build.prop");
+                        return ReadExt4FileByInode(readFromPartition, entry.Item1, inodeTableBlock, blockSize, inodeSize, inodesPerGroup);
+                    }
+                }
+
+                // 在子目录查找 build.prop (优先级: /system > /etc)
+                string[] searchDirs = { "system", "etc" };
+                foreach (var dirName in searchDirs)
+                {
+                    foreach (var entry in entries)
+                    {
+                        if (entry.Item2 == dirName && entry.Item3 == 2) // 目录
+                        {
+                            _logDetail(string.Format("进入 /{0} 目录...", dirName));
+                            var subDirData = ReadExt4DirectoryByInode(readFromPartition, entry.Item1, inodeTableBlock, blockSize, inodeSize, inodesPerGroup, blocksPerGroup, is64Bit, bgdtOffset, bgdSize);
+                            if (subDirData != null)
+                            {
+                                var subEntries = ParseExt4DirectoryEntries(subDirData);
+                                foreach (var subEntry in subEntries)
+                                {
+                                    if (subEntry.Item2 == "build.prop" && subEntry.Item3 == 1)
+                                    {
+                                        _logDetail(string.Format("找到 /{0}/build.prop", dirName));
+                                        return ReadExt4FileByInode(readFromPartition, subEntry.Item1, inodeTableBlock, blockSize, inodeSize, inodesPerGroup);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _logDetail("未找到 build.prop");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _log(string.Format("解析 EXT4 失败: {0}", ex.Message));
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 读取 EXT4 extent 数据 - 完整支持多层 Extent 树
+        /// </summary>
+        private byte[] ReadExt4ExtentData(DeviceReadDelegate read, byte[] inode, uint blockSize, int maxSize)
+        {
+            try
+            {
+                return ReadExt4ExtentDataRecursive(read, inode, 0x28, blockSize, maxSize, 0);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 递归读取 EXT4 extent 数据
+        /// </summary>
+        /// <param name="read">读取委托</param>
+        /// <param name="data">包含 extent header 的数据</param>
+        /// <param name="headerOffset">extent header 在 data 中的偏移</param>
+        /// <param name="blockSize">块大小</param>
+        /// <param name="maxSize">最大读取大小</param>
+        /// <param name="depth">当前递归深度 (防止无限递归)</param>
+        private byte[] ReadExt4ExtentDataRecursive(DeviceReadDelegate read, byte[] data, int headerOffset, uint blockSize, int maxSize, int depth)
+        {
+            if (depth > 5) return null; // 防止无限递归
+            if (data == null || headerOffset + 12 > data.Length) return null;
+
+            // 解析 extent header
+            ushort ehMagic = BitConverter.ToUInt16(data, headerOffset);
+            if (ehMagic != 0xF30A)
+            {
+                _logDetail(string.Format("EXT4 Extent: 无效 magic 0x{0:X4}", ehMagic));
+                return null;
+            }
+
+            ushort ehEntries = BitConverter.ToUInt16(data, headerOffset + 2);
+            ushort ehMax = BitConverter.ToUInt16(data, headerOffset + 4);
+            ushort ehDepth = BitConverter.ToUInt16(data, headerOffset + 6);
+
+            _logDetail(string.Format("EXT4 Extent: depth={0}, entries={1}", ehDepth, ehEntries));
+
+            if (ehDepth == 0)
+            {
+                // 叶节点 - 直接包含 extent 条目
+                return ReadExt4LeafExtents(read, data, headerOffset, ehEntries, blockSize, maxSize);
+            }
+            else
+            {
+                // 内部节点 - 包含指向下一层的索引
+                return ReadExt4IndexExtents(read, data, headerOffset, ehEntries, blockSize, maxSize, depth);
+            }
+        }
+
+        /// <summary>
+        /// 读取 EXT4 叶节点 extent 数据
+        /// </summary>
+        private byte[] ReadExt4LeafExtents(DeviceReadDelegate read, byte[] data, int headerOffset, int entries, uint blockSize, int maxSize)
+        {
+            var result = new List<byte>();
+            int totalRead = 0;
+
+            for (int i = 0; i < entries && totalRead < maxSize; i++)
+            {
+                int entryOffset = headerOffset + 12 + i * 12;
+                if (entryOffset + 12 > data.Length) break;
+
+                uint eeBlock = BitConverter.ToUInt32(data, entryOffset);      // 逻辑块号
+                ushort eeLen = BitConverter.ToUInt16(data, entryOffset + 4);  // 块数量
+                ushort eeStartHi = BitConverter.ToUInt16(data, entryOffset + 6);
+                uint eeStartLo = BitConverter.ToUInt32(data, entryOffset + 8);
+
+                // 处理未初始化的 extent (长度高位为1)
+                bool uninitialized = (eeLen & 0x8000) != 0;
+                int actualLen = eeLen & 0x7FFF;
+
+                if (uninitialized || actualLen == 0) continue;
+
+                long physBlock = eeStartLo | ((long)eeStartHi << 32);
+                int readSize = Math.Min((int)(actualLen * blockSize), maxSize - totalRead);
+
+                if (readSize <= 0) break;
+
+                byte[] extentData = read(physBlock * blockSize, readSize);
+                if (extentData != null)
+                {
+                    result.AddRange(extentData);
+                    totalRead += extentData.Length;
+                }
+            }
+
+            return result.Count > 0 ? result.ToArray() : null;
+        }
+
+        /// <summary>
+        /// 读取 EXT4 索引节点并递归处理
+        /// </summary>
+        private byte[] ReadExt4IndexExtents(DeviceReadDelegate read, byte[] data, int headerOffset, int entries, uint blockSize, int maxSize, int depth)
+        {
+            var result = new List<byte>();
+            int totalRead = 0;
+
+            for (int i = 0; i < entries && totalRead < maxSize; i++)
+            {
+                int entryOffset = headerOffset + 12 + i * 12;
+                if (entryOffset + 12 > data.Length) break;
+
+                // Extent 索引结构: ei_block(4) + ei_leaf_lo(4) + ei_leaf_hi(2) + unused(2)
+                // uint eiBlock = BitConverter.ToUInt32(data, entryOffset);
+                uint eiLeafLo = BitConverter.ToUInt32(data, entryOffset + 4);
+                ushort eiLeafHi = BitConverter.ToUInt16(data, entryOffset + 8);
+
+                long leafBlock = eiLeafLo | ((long)eiLeafHi << 32);
+
+                // 读取下一层节点
+                byte[] nextLevel = read(leafBlock * blockSize, (int)blockSize);
+                if (nextLevel == null || nextLevel.Length < 12) continue;
+
+                // 递归解析
+                byte[] extentData = ReadExt4ExtentDataRecursive(read, nextLevel, 0, blockSize, maxSize - totalRead, depth + 1);
+                if (extentData != null)
+                {
+                    result.AddRange(extentData);
+                    totalRead += extentData.Length;
+                }
+            }
+
+            return result.Count > 0 ? result.ToArray() : null;
+        }
+
+        /// <summary>
+        /// 解析 EXT4 目录项
+        /// </summary>
+        private List<Tuple<uint, string, byte>> ParseExt4DirectoryEntries(byte[] dirData)
+        {
+            var entries = new List<Tuple<uint, string, byte>>();
+            if (dirData == null || dirData.Length < 12) return entries;
+
+            try
+            {
+                int offset = 0;
+                while (offset + 8 <= dirData.Length)
+                {
+                    uint inode = BitConverter.ToUInt32(dirData, offset);
+                    ushort recLen = BitConverter.ToUInt16(dirData, offset + 4);
+                    byte nameLen = dirData[offset + 6];
+                    byte fileType = dirData[offset + 7];
+
+                    if (recLen < 8 || recLen > dirData.Length - offset) break;
+                    if (inode == 0)
+                    {
+                        offset += recLen;
+                        continue;
+                    }
+
+                    if (nameLen > 0 && offset + 8 + nameLen <= dirData.Length)
+                    {
+                        string name = Encoding.UTF8.GetString(dirData, offset + 8, nameLen);
+                        if (name != "." && name != "..")
+                        {
+                            entries.Add(Tuple.Create(inode, name, fileType));
+                        }
+                    }
+
+                    offset += recLen;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EXT4] 解析目录项异常: {ex.Message}");
+            }
+            return entries;
+        }
+
+        /// <summary>
+        /// 通过 inode 号读取 EXT4 目录数据
+        /// </summary>
+        private byte[] ReadExt4DirectoryByInode(DeviceReadDelegate read, uint inodeNum,
+            long inodeTableBlock, uint blockSize, ushort inodeSize, uint inodesPerGroup,
+            uint blocksPerGroup, bool is64Bit, long bgdtOffset, int bgdSize)
+        {
+            try
+            {
+                // 计算 inode 所在的块组
+                uint blockGroup = (inodeNum - 1) / inodesPerGroup;
+                uint localIndex = (inodeNum - 1) % inodesPerGroup;
+
+                // 如果不是第一个块组，需要读取对应的 block group descriptor
+                long actualInodeTable = inodeTableBlock;
+                if (blockGroup > 0)
+                {
+                    var bgdData = read(bgdtOffset + blockGroup * bgdSize, bgdSize);
+                    if (bgdData != null && bgdData.Length >= bgdSize)
+                    {
+                        uint bgInodeTableLo = BitConverter.ToUInt32(bgdData, 0x08);
+                        uint bgInodeTableHi = is64Bit ? BitConverter.ToUInt32(bgdData, 0x28) : 0;
+                        actualInodeTable = bgInodeTableLo | ((long)bgInodeTableHi << 32);
+                    }
+                }
+
+                // 读取 inode
+                long inodeOffset = actualInodeTable * blockSize + localIndex * inodeSize;
+                var inode = read(inodeOffset, inodeSize);
+                if (inode == null || inode.Length < 128) return null;
+
+                ushort iMode = BitConverter.ToUInt16(inode, 0x00);
+                if ((iMode & 0xF000) != 0x4000) return null; // 不是目录
+
+                uint iSizeLo = BitConverter.ToUInt32(inode, 0x04);
+                uint iFlags = BitConverter.ToUInt32(inode, 0x20);
+                bool useExtents = (iFlags & 0x80000) != 0;
+
+                if (useExtents)
+                {
+                    return ReadExt4ExtentData(read, inode, blockSize, (int)Math.Min(iSizeLo, blockSize * 4));
+                }
+                else
+                {
+                    uint block0 = BitConverter.ToUInt32(inode, 0x28);
+                    if (block0 > 0)
+                    {
+                        return read((long)block0 * blockSize, (int)Math.Min(iSizeLo, blockSize * 4));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EXT4] 读取目录数据异常: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 通过 inode 号读取 EXT4 文件并解析为 BuildPropInfo
+        /// </summary>
+        private BuildPropInfo ReadExt4FileByInode(DeviceReadDelegate read, uint inodeNum,
+            long inodeTableBlock, uint blockSize, ushort inodeSize, uint inodesPerGroup)
+        {
+            try
+            {
+                // 简化处理：假设都在第一个块组
+                uint localIndex = (inodeNum - 1) % inodesPerGroup;
+                long inodeOffset = inodeTableBlock * blockSize + localIndex * inodeSize;
+
+                var inode = read(inodeOffset, inodeSize);
+                if (inode == null || inode.Length < 128) return null;
+
+                ushort iMode = BitConverter.ToUInt16(inode, 0x00);
+                if ((iMode & 0xF000) != 0x8000) return null; // 不是普通文件
+
+                uint iSizeLo = BitConverter.ToUInt32(inode, 0x04);
+                uint iFlags = BitConverter.ToUInt32(inode, 0x20);
+                bool useExtents = (iFlags & 0x80000) != 0;
+
+                int fileSize = (int)Math.Min(iSizeLo, 64 * 1024);
+                byte[] fileData = null;
+
+                if (useExtents)
+                {
+                    fileData = ReadExt4ExtentData(read, inode, blockSize, fileSize);
+                }
+                else
+                {
+                    uint block0 = BitConverter.ToUInt32(inode, 0x28);
+                    if (block0 > 0)
+                    {
+                        fileData = read((long)block0 * blockSize, fileSize);
+                    }
+                }
+
+                if (fileData != null && fileData.Length > 0)
+                {
+                    string content = Encoding.UTF8.GetString(fileData);
+                    return ParseBuildProp(content);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logDetail($"[EXT4] 读取文件异常: {ex.Message}");
+            }
+            return null;
+        }
+
+        #endregion
+
+        #region DevInfo 分区解析
+
+        /// <summary>
+        /// 从 devinfo 分区数据解析硬件信息 (SN/IMEI)
+        /// </summary>
+        /// <summary>
+        /// 解析 proinfo 分区 (联想系列专用)
+        /// </summary>
+        public void ParseProInfo(byte[] data, DeviceFullInfo info)
+        {
+            if (data == null || data.Length < 1024) return;
+
+            try
+            {
+                // 联想 proinfo 中的序列号通常在 0x24 或 0x38 偏移
+                string sn = ExtractString(data, 0x24, 32);
+                if (string.IsNullOrEmpty(sn) || !IsValidSerialNumber(sn))
+                    sn = ExtractString(data, 0x38, 32);
+
+                if (IsValidSerialNumber(sn))
+                {
+                    info.HardwareSn = sn;
+                    info.Sources["SN"] = "proinfo";
+                    _logDetail(string.Format("从 proinfo 发现序列号: {0}", sn));
+                }
+
+                // 联想型号有时也在 proinfo
+                string model = ExtractString(data, 0x200, 64);
+                if (!string.IsNullOrEmpty(model) && model.Contains("Lenovo"))
+                {
+                    info.Model = model.Replace("Lenovo", "").Trim();
+                    info.Brand = "Lenovo";
+                    _logDetail(string.Format("从 proinfo 发现型号: {0}", model));
+                }
+            }
+            catch (Exception ex)
+            {
+                _log("解析 proinfo 失败: " + ex.Message);
+            }
+        }
+
+        public void ParseDevInfo(byte[] data, DeviceFullInfo info)
+        {
+            if (data == null || data.Length < 512) return;
+
+            try
+            {
+                // 1. 提取序列号 (通常在偏移 0x00 开始，以 \0 结尾)
+                string sn = ExtractString(data, 0, 32);
+                if (IsValidSerialNumber(sn))
+                {
+                    info.Sources["SN"] = "devinfo";
+                    // 这里的 SN 通常是硬件 SN，优先于 Sahara 获取的 SerialHex
+                    _logDetail(string.Format("从 devinfo 发现序列号: {0}", sn));
+                }
+
+                // 2. 尝试提取 IMEI (不同厂家偏移不同)
+                // 常见偏移：0x400, 0x800, 0x1000
+                string imei1 = "";
+                if (data.Length >= 0x500) imei1 = ExtractImei(data, 0x400);
+                if (string.IsNullOrEmpty(imei1) && data.Length >= 0x900) imei1 = ExtractImei(data, 0x800);
+
+                if (!string.IsNullOrEmpty(imei1))
+                {
+                    info.Sources["IMEI"] = "devinfo";
+                    _logDetail(string.Format("从 devinfo 发现 IMEI: {0}", imei1));
+                }
+            }
+            catch (Exception ex)
+            {
+                _log("解析 devinfo 失败: " + ex.Message);
+            }
+        }
+
+        private string ExtractString(byte[] data, int offset, int maxLength)
+        {
+            if (offset >= data.Length) return "";
+            int len = 0;
+            while (len < maxLength && offset + len < data.Length && data[offset + len] != 0 && data[offset + len] >= 0x20 && data[offset + len] <= 0x7E)
+            {
+                len++;
+            }
+            if (len == 0) return "";
+            return Encoding.ASCII.GetString(data, offset, len).Trim();
+        }
+
+        private string ExtractImei(byte[] data, int offset)
+        {
+            string s = ExtractString(data, offset, 32);
+            if (s.Length >= 14 && s.All(char.IsDigit)) return s;
+            return "";
+        }
+
+        private bool IsValidSerialNumber(string sn)
+        {
+            if (string.IsNullOrEmpty(sn) || sn.Length < 8) return false;
+            // 简单校验：大部分 SN 是字母+数字
+            return sn.All(c => char.IsLetterOrDigit(c));
+        }
+
+        #endregion
+
+        #region 综合信息获取
+
+        /// <summary>
+        /// 从 Qualcomm 服务获取完整设备信息
+        /// </summary>
+        public DeviceFullInfo GetInfoFromQualcommService(QualcommService service)
+        {
+            var info = new DeviceFullInfo();
+
+            if (service == null) return info;
+
+            // 1. Sahara 阶段获取的芯片信息
+            var chipInfo = service.ChipInfo;
+            if (chipInfo != null)
+            {
+                info.ChipSerial = chipInfo.SerialHex;
+                info.ChipName = chipInfo.ChipName;
+                info.HwId = chipInfo.HwIdHex;
+                info.PkHash = chipInfo.PkHash;
+                info.Vendor = chipInfo.Vendor;
+
+                // 从 PK Hash 推断品牌
+                if (info.Vendor == "Unknown" && !string.IsNullOrEmpty(chipInfo.PkHash))
+                {
+                    info.Vendor = QualcommDatabase.GetVendorByPkHash(chipInfo.PkHash);
+                }
+
+                info.Sources["ChipInfo"] = "Sahara";
+            }
+
+            // 2. Firehose 阶段获取的存储信息
+            info.StorageType = service.StorageType;
+            info.SectorSize = service.SectorSize;
+            info.Sources["Storage"] = "Firehose";
+
+            return info;
+        }
+
+        private void MergeInfo(DeviceFullInfo target, DeviceFullInfo source)
+        {
+            if (!string.IsNullOrEmpty(source.MarketName) && string.IsNullOrEmpty(target.MarketName))
+                target.MarketName = source.MarketName;
+            if (!string.IsNullOrEmpty(source.Model) && string.IsNullOrEmpty(target.Model))
+                target.Model = source.Model;
+            if (!string.IsNullOrEmpty(source.ChipName) && string.IsNullOrEmpty(target.ChipName))
+                target.ChipName = source.ChipName;
+            if (!string.IsNullOrEmpty(source.OtaVersion) && string.IsNullOrEmpty(target.OtaVersion))
+                target.OtaVersion = source.OtaVersion;
+            if (!string.IsNullOrEmpty(source.OplusProject) && string.IsNullOrEmpty(target.OplusProject))
+                target.OplusProject = source.OplusProject;
+            if (!string.IsNullOrEmpty(source.OplusNvId) && string.IsNullOrEmpty(target.OplusNvId))
+                target.OplusNvId = source.OplusNvId;
+        }
+
+        private void MergeFromBuildProp(DeviceFullInfo target, BuildPropInfo source)
+        {
+            if (!string.IsNullOrEmpty(source.Brand) && (string.IsNullOrEmpty(target.Brand) || target.Brand == "oplus"))
+                target.Brand = source.Brand;
+            if (!string.IsNullOrEmpty(source.Model) && string.IsNullOrEmpty(target.Model))
+                target.Model = source.Model;
+            if (!string.IsNullOrEmpty(source.MarketName) && string.IsNullOrEmpty(target.MarketName))
+                target.MarketName = source.MarketName;
+            if (!string.IsNullOrEmpty(source.MarketNameEn) && string.IsNullOrEmpty(target.MarketNameEn))
+                target.MarketNameEn = source.MarketNameEn;
+            // 设备代号：优先 Codename (ro.product.device/ro.build.product)，其次 Device
+            if (string.IsNullOrEmpty(target.DeviceCodename))
+            {
+                if (!string.IsNullOrEmpty(source.Codename))
+                    target.DeviceCodename = source.Codename;
+                else if (!string.IsNullOrEmpty(source.Device))
+                    target.DeviceCodename = source.Device;
+                else if (!string.IsNullOrEmpty(source.DeviceName))
+                    target.DeviceCodename = source.DeviceName;
+            }
+            if (!string.IsNullOrEmpty(source.AndroidVersion) && string.IsNullOrEmpty(target.AndroidVersion))
+                target.AndroidVersion = source.AndroidVersion;
+            if (!string.IsNullOrEmpty(source.SdkVersion) && string.IsNullOrEmpty(target.SdkVersion))
+                target.SdkVersion = source.SdkVersion;
+            if (!string.IsNullOrEmpty(source.SecurityPatch) && string.IsNullOrEmpty(target.SecurityPatch))
+                target.SecurityPatch = source.SecurityPatch;
+            if (!string.IsNullOrEmpty(source.BuildId) && string.IsNullOrEmpty(target.BuildId))
+                target.BuildId = source.BuildId;
+            if (!string.IsNullOrEmpty(source.Fingerprint) && string.IsNullOrEmpty(target.Fingerprint))
+                target.Fingerprint = source.Fingerprint;
+            if (!string.IsNullOrEmpty(source.DisplayId) && string.IsNullOrEmpty(target.DisplayId))
+                target.DisplayId = source.DisplayId;
+            if (!string.IsNullOrEmpty(source.OtaVersion) && string.IsNullOrEmpty(target.OtaVersion))
+            {
+                string ota = source.OtaVersion;
+                // 智能合成：如果 OTA 版本以 . 开头 (如 .610(CN01))，尝试补全前缀
+                if (ota.StartsWith(".") && !string.IsNullOrEmpty(target.AndroidVersion))
+                {
+                    ota = target.AndroidVersion + ".0.0" + ota;
+                }
+                target.OtaVersion = ota;
+            }
+            if (!string.IsNullOrEmpty(source.BuildDate)) target.BuiltDate = source.BuildDate;
+            if (!string.IsNullOrEmpty(source.BuildUtc)) target.BuildTimestamp = source.BuildUtc;
+            
+            if (!string.IsNullOrEmpty(source.BootSlot) && string.IsNullOrEmpty(target.CurrentSlot))
+            {
+                target.CurrentSlot = source.BootSlot;
+                target.IsAbDevice = true;
+            }
+            if (!string.IsNullOrEmpty(source.OplusCpuInfo) && string.IsNullOrEmpty(target.OplusCpuInfo))
+                target.OplusCpuInfo = source.OplusCpuInfo;
+            if (!string.IsNullOrEmpty(source.OplusNvId) && string.IsNullOrEmpty(target.OplusNvId))
+                target.OplusNvId = source.OplusNvId;
+            if (!string.IsNullOrEmpty(source.OplusProject) && string.IsNullOrEmpty(target.OplusProject))
+                target.OplusProject = source.OplusProject;
+        }
+
+        #endregion
+    }
+}
